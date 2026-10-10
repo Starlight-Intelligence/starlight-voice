@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import stat
 import threading
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,6 +22,29 @@ TIMINGS = {"response_created_ms", "first_scheduled_audio_ms", "response_done_ms"
 FIELDS = {"sequence", "status", "interrupted", "token_counts", *TIMINGS}
 MAX_FILE_BYTES = 32 * 1024 * 1024
 _lock = threading.Lock()
+
+
+@contextmanager
+def _file_lock(fd: int):
+    # Nonblocking locks keep a competing recorder off the conversation's hot path.
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        try:
+            yield
+        finally:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def validate_observation(data: dict) -> dict:
@@ -66,14 +92,29 @@ def append_observation(metadata: dict, *, session_id: str, provider: str, model:
         "quality": {"tool_selection_correct": None, "privacy_compliant": None, "approval_compliant": None},
         "acceptance_verified": False,
     }
-    line = json.dumps(record, allow_nan=False, separators=(",", ":")) + "\n"
+    line = (json.dumps(record, allow_nan=False, separators=(",", ":")) + "\n").encode("utf-8")
     with _lock:
-        if target.is_symlink() or (target.exists() and target.stat().st_size + len(line.encode()) > MAX_FILE_BYTES):
-            raise OSError("Turn history storage limit reached or target unavailable")
+        if target.is_symlink():
+            raise OSError("Turn history target unavailable")
         target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8") as handle:
-            handle.write(line)
-            handle.flush()
+        flags = (os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        fd = os.open(target, flags, 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("Turn history target unavailable")
+            with _file_lock(fd):
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_size + len(line) > MAX_FILE_BYTES:
+                    raise OSError("Turn history storage limit reached or target unavailable")
+                remaining = memoryview(line)
+                while remaining:
+                    written = os.write(fd, remaining)
+                    if written <= 0:
+                        raise OSError("Turn history write unavailable")
+                    remaining = remaining[written:]
+        finally:
+            os.close(fd)
 
 
 def recent_observations(limit: int = 5, *, path: Path | None = None) -> list[dict]:

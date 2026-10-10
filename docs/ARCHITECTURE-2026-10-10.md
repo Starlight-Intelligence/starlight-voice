@@ -172,6 +172,20 @@ The browser submits enum/count/timing metadata to the same-origin, capability-ga
 `/voice/observation` route. The local append-only file lives beside the existing run
 ledger in ignored `memory/voice/`, with at most 100 records per session and a 32 MiB
 storage cap. Repeating the same sequence is idempotent; replacing it is refused.
+Cooperating local recorder processes use a nonblocking OS file lock around the
+opened file's byte-count check and complete binary append. Windows uses a one-byte
+`msvcrt` lock; POSIX uses `flock`. Contention reports unavailable through the
+existing retry path instead of waiting on the other writer. Binary LF records
+keep the byte cap exact on Windows as well. Short writes finish under the same
+lock; failures close the owned descriptor. Existing history is never rotated or
+truncated, and there is no lock file to expire or delete. Three regressions failed
+before repair: competing processes spending the last record, ignoring another
+process's lock, and Windows newline expansion exceeding the cap.
+
+This protects cooperating writers on the local file; unrelated writes, external
+file replacement and network-filesystem lock behavior are not established.
+OS write completion does not prove power-loss durability. Nonblocking locks avoid
+lock waits, while filesystem operations still have no hard latency deadline.
 Storage failure is reported, leaves the record retryable, and preserves existing
 history. Stop closes media first, lets bounded pending metadata writes finish,
 then releases the local capability.
