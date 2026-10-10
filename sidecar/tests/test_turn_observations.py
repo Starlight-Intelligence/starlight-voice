@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import os
 import subprocess
@@ -323,3 +324,25 @@ def test_nonregular_fifo_target_is_rejected_without_waiting_for_a_reader(tmp_pat
     result = subprocess.run(_writer_args(path, 4096), capture_output=True,
                             text=True, timeout=5, check=True)
     assert json.loads(result.stdout) == {"stored": False}
+
+
+@pytest.mark.parametrize("error_number", [errno.EACCES, errno.EMFILE, errno.ENXIO])
+def test_failed_open_propagates_original_error_without_closing_an_unowned_fd(tmp_path, monkeypatch, error_number):
+    import starlight_voice.turn_observations as module
+
+    path = tmp_path / "turns.jsonl"
+    old = _seed_history(path)
+    failure = OSError(error_number, "Injected open failure")
+
+    def unavailable(*_args):
+        raise failure
+
+    def unowned_close(_fd):
+        pytest.fail("No descriptor was acquired, so none may be closed")
+
+    monkeypatch.setattr(module.os, "open", unavailable)
+    monkeypatch.setattr(module.os, "close", unowned_close)
+    with pytest.raises(OSError) as result:
+        _seed_history(path)
+    assert result.value is failure
+    assert path.read_bytes() == old
