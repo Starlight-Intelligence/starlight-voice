@@ -64,6 +64,20 @@ def _llm_service(settings: Settings):
 
 def _tts_service(settings: Settings):
     """Select the provider protocol before constructing an optional Pipecat service."""
+    if settings.tts_engine == "openrouter-speech":
+        from .adapters.openrouter_speech import OpenRouterSpeech
+
+        if settings.tts_model not in OpenRouterSpeech.MODELS:
+            raise adapters.VoiceDepsUnavailable("Select an explicit supported OpenRouter speech model")
+        api_key = os.environ.get("OPENROUTER_API_KEY", "")
+        if not api_key.strip() or api_key.strip() == "*not found*" or not settings.tts_voice_id.strip():
+            raise adapters.VoiceDepsUnavailable(
+                "OpenRouter speech needs an inference OPENROUTER_API_KEY and explicit STARLIGHT_TTS_VOICE_ID"
+            )
+        from .adapters.openrouter_speech_pipecat import create_openrouter_speech_tts
+
+        return create_openrouter_speech_tts(api_key=api_key, voice_id=settings.tts_voice_id,
+                                           model=settings.tts_model)
     if settings.tts_engine != "elevenlabs":
         raise adapters.VoiceDepsUnavailable(f"TTS engine '{settings.tts_engine}' is not implemented in this graph")
     if settings.tts_model in {"eleven_v4_turbo", "eleven_v3_conversational"}:

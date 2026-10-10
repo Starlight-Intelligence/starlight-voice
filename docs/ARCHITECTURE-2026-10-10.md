@@ -34,6 +34,48 @@ The component default now pairs `openai/gpt-oss-120b` with the existing Cerebras
 provider pin, replacing an incompatible GPT-5/Cerebras selection. This is a
 configured route, not a measured performance result. [Provider listing](https://openrouter.ai/provider/cerebras)
 
+## OpenRouter REST speech comparison
+
+The component graph can explicitly select `STARLIGHT_TTS_ENGINE=openrouter-speech`
+with `STARLIGHT_TTS_MODEL=elevenlabs/eleven-v4-turbo` or
+`elevenlabs/eleven-v3-conversational`, an explicit `STARLIGHT_TTS_VOICE_ID` and an
+inference `OPENROUTER_API_KEY`. The [7 October OpenRouter announcement](https://openrouter.ai/blog/announcements/elevenlabs-on-openrouter/)
+documents premade named voices and a speech route without a separate ElevenLabs
+plan. This can reduce credential setup for a component comparison. It does not
+provide native speech-to-speech or the direct dialogue socket's text-input protocol.
+No automatic protocol translation, provider fallback or default voice change occurs.
+
+`OpenRouterSpeech` sends one aggregated sentence to the fixed official HTTPS
+endpoint with an explicit model/voice and `response_format=pcm`. The
+[TTS guide](https://openrouter.ai/docs/guides/overview/multimodal/tts) documents
+24 kHz mono PCM16 for this ElevenLabs route. The adapter rejects redirects,
+non-200 responses, non-PCM MIME types and compression before audio delivery,
+ignores environment proxies, limits input to 4,096 characters/chunks and output
+to 2 MiB, and bounds the whole turn to 30 seconds by default. It emits complete
+PCM16 samples in chunks of at most 8 KiB without waiting to fill that size.
+Raw HTTP chunk boundaries can split a sample; an incomplete final sample fails.
+There are no retries or silent switches. Caller cancellation propagates and the
+response/client close when the consumer closes the generator. The lazy Pipecat
+binding labels frames as 24 kHz mono, retains context IDs and emits fatal redacted
+errors for failed or silent synthesis. The base graph handles sentence ordering.
+
+The named serious alternatives remain the direct ElevenLabs 48 kHz dialogue
+WebSocket and native Grok/OpenAI conversation transports. REST requires a complete
+sentence before submission and adds a gateway hop; neither that observation nor
+vendor latency figures establishes which produces earlier audible speech.
+Interrupted-stream cleanup in synthetic transport tests does not prove provider
+cancellation or stopped charges. Each sentence starts a fresh request without
+cross-sentence prosody context. Account/model acceptance, device playback,
+stream-arrival/audible latency, voice preference, billing and RAM measurements
+remain open. No account generation or device has been started. SDK checks cover
+both Pipecat 1.3 and 1.12 using fake synthesis, not provider audio.
+
+The discovered ordinary OpenRouter key currently fails GET authentication because
+its expiry exceeds the account's maximum lifetime. The separate management key
+authenticates for metadata and must stay outside inference. Approval for a short
+dedicated capped test key is pending. Credentials are not copied into this repo;
+Infisical's `*not found*` sentinel is rejected as a missing key.
+
 ## Memory and readiness
 
 Legacy loopback retrieval now uses an async request with a total deadline. The

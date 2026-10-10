@@ -57,10 +57,11 @@ class Settings:
     classifies tier and must NOT read this — provider-pin-by-tier is owned by the LLM
     adapter, TTS engine selection by the TTS adapter.
 
-    Defaults are CLOUD-FIRST (decided 2026-06-15): on Frank's GTX 1650 (4GB, no Tensor
-    cores) cloud STT/TTS is faster, frees the GPU for parallel work, and needs no heavy
-    CUDA install. The runnable-today path uses only LIVE keys — Groq Whisper (STT),
-    OpenRouter (LLM, FAST tier pinned to Cerebras THROUGH OpenRouter), ElevenLabs (TTS).
+    Component defaults are CLOUD-FIRST (decided 2026-06-15): on Frank's GTX 1650
+    (4GB, no Tensor cores), this avoids heavy CUDA installs. The configured path is
+    Groq Whisper (STT), OpenRouter (LLM, FAST tier pinned to Cerebras through
+    OpenRouter), ElevenLabs (TTS). Configuration does not prove working keys or
+    measured speed; native browser speech is the primary conversation architecture.
     Local engines (faster-whisper / Kokoro) remain selectable as an offline/private tier
     via env vars; install them with the `voice-local` extra.
     """
@@ -76,8 +77,8 @@ class Settings:
     llm_base_url: str = "https://openrouter.ai/api/v1"
     llm_fast_provider: str = "cerebras"          # OpenRouter provider pin for the FAST/voice tier (else TTFT SLA breaks)
 
-    # TTS — cloud-first default (ElevenLabs key is live; Cartesia Sonic-3.5 when keyed)
-    tts_engine: str = "elevenlabs"               # elevenlabs | cartesia | kokoro(local) | piper(local)
+    # TTS — explicit component selection; live authentication/audition remain gates.
+    tts_engine: str = "elevenlabs"               # elevenlabs | openrouter-speech | cartesia | kokoro | piper
     tts_model: str = "eleven_flash_v2_5"
     tts_voice_id: str = ""                       # engine-specific; adapter picks a sensible default when blank
     tts_device: str = "cpu"                       # only used by the local Kokoro/Piper tier

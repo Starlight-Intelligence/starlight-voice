@@ -53,6 +53,29 @@ def test_unknown_tts_model_is_rejected_before_imports():
         _tts_service(Settings(tts_model="unknown"))
 
 
+@pytest.mark.parametrize("model", ["elevenlabs/eleven-v4-turbo", "elevenlabs/eleven-v3-conversational"])
+def test_explicit_openrouter_speech_selection_reaches_only_its_factory(monkeypatch, model):
+    from starlight_voice.adapters import openrouter_speech_pipecat
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-inference-key")
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.setattr(openrouter_speech_pipecat, "create_openrouter_speech_tts", lambda **kw: kw)
+    result = _tts_service(Settings(tts_engine="openrouter-speech", tts_model=model, tts_voice_id="george"))
+    assert result == {"api_key": "test-inference-key", "voice_id": "george", "model": model}
+
+
+@pytest.mark.parametrize("key,voice", [("", "george"), ("*not found*", "george"), ("test", "")])
+def test_openrouter_speech_needs_inference_key_and_selected_voice(monkeypatch, key, voice):
+    monkeypatch.setenv("OPENROUTER_API_KEY", key)
+    with pytest.raises(adapters.VoiceDepsUnavailable, match="inference OPENROUTER_API_KEY"):
+        _tts_service(Settings(tts_engine="openrouter-speech", tts_model="elevenlabs/eleven-v4-turbo", tts_voice_id=voice))
+
+
+def test_openrouter_speech_does_not_translate_or_fallback_from_a_direct_model_id():
+    with pytest.raises(adapters.VoiceDepsUnavailable, match="explicit supported"):
+        _tts_service(Settings(tts_engine="openrouter-speech", tts_model="eleven_v4_turbo", tts_voice_id="george"))
+
+
 def test_memory_frame_retrieval_is_async_and_never_adds_a_policy_message(monkeypatch):
     from starlight_voice.memory import MemoryGatewayClient
 

@@ -171,7 +171,8 @@ def test_closing_frame_generator_closes_the_real_dialogue_socket(frames):
 
 
 @pytest.mark.parametrize("mode", ["success", "error", "silent"])
-def test_actual_pipecat_pipeline_orders_audio_and_ends_on_failure_without_devices(mode):
+@pytest.mark.parametrize("engine", ["dialogue", "openrouter-speech"])
+def test_actual_pipecat_pipeline_orders_audio_and_ends_on_failure_without_devices(mode, engine):
     pytest.importorskip("pipecat")
     from pipecat.frames.frames import EndFrame, TTSAudioRawFrame, TTSSpeakFrame, TTSStartedFrame, TTSStoppedFrame
     from pipecat.pipeline.pipeline import Pipeline
@@ -179,11 +180,17 @@ def test_actual_pipecat_pipeline_orders_audio_and_ends_on_failure_without_device
     from pipecat.pipeline.worker import PipelineWorker
     from pipecat.processors.frame_processor import FrameProcessor
 
+    from starlight_voice.adapters.openrouter_speech import SpeechError
+    from starlight_voice.adapters.openrouter_speech_pipecat import create_openrouter_speech_tts
+
+    error_class = DialogueError if engine == "dialogue" else SpeechError
+    sample_rate = 48000 if engine == "dialogue" else 24000
+
     class Dialogue:
         async def stream(self, text):
             assert [part async for part in text] == ["Hello."]
             if mode == "error":
-                raise DialogueError("private-detail")
+                raise error_class("private-detail")
             if mode == "success":
                 yield b"\x01\x00" * 960
 
@@ -198,7 +205,8 @@ def test_actual_pipecat_pipeline_orders_audio_and_ends_on_failure_without_device
             await self.push_frame(frame, direction)
 
     async def run():
-        service = build(Dialogue())
+        service = build(Dialogue()) if engine == "dialogue" else create_openrouter_speech_tts(
+            api_key="test", voice_id="george", model="elevenlabs/eleven-v4-turbo", speech=Dialogue())
         sink = Sink()
         errors = []
         task = PipelineWorker(Pipeline([service, sink]), enable_rtvi=False)
@@ -215,7 +223,7 @@ def test_actual_pipecat_pipeline_orders_audio_and_ends_on_failure_without_device
                     if isinstance(frame, (TTSStartedFrame, TTSAudioRawFrame, TTSStoppedFrame))]
         if mode == "success":
             assert [type(frame) for frame in relevant] == [TTSStartedFrame, TTSAudioRawFrame, TTSStoppedFrame]
-            assert relevant[1].sample_rate == 48000 and relevant[1].num_channels == 1
+            assert relevant[1].sample_rate == sample_rate and relevant[1].num_channels == 1
             assert len({frame.context_id for frame in relevant}) == 1
             assert not errors
         else:

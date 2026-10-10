@@ -132,6 +132,18 @@ To deploy just the landing site statically, publish the `site/` directory as-is.
 
 ## Configuration
 
+The component comparison graph has an explicit OpenRouter REST speech option:
+set `STARLIGHT_TTS_ENGINE=openrouter-speech`, choose
+`STARLIGHT_TTS_MODEL=elevenlabs/eleven-v4-turbo` or
+`elevenlabs/eleven-v3-conversational`, and set `STARLIGHT_TTS_VOICE_ID` to a
+premade voice name or supported ID. It requires an inference
+`OPENROUTER_API_KEY`; a management key must stay outside the audio graph.
+The adapter streams bounded 24 kHz mono PCM16 and closes its HTTP response on
+interruption. The direct ElevenLabs WebSocket path and native browser defaults
+remain selectable. Live authentication, audible quality, latency and billing
+acceptance are pending. See the REST speech comparison in
+`docs/ARCHITECTURE-2026-10-10.md` before enabling it.
+
 Use the local secrets helper when provider wiring begins:
 
 ```powershell
