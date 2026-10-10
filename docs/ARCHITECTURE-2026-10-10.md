@@ -205,24 +205,27 @@ tools and text-model usage can change the total. No invoice or live usage is pro
 
 | Route | Published unit price | What it covers |
 | --- | --- | --- |
-| Grok native conversation | $0.08 per session minute | Native speech-to-speech |
+| Grok native conversation | $0.08 per provider-billed minute, plus $0.004 per text input | Native speech-to-speech; minute-metering semantics still need verification |
 | ElevenLabs v4 Turbo | $0.011 per 1,000 characters until October 12; regular $0.04 | Generated speech only |
 | ElevenLabs v3 Conversational or Flash/Turbo | $0.04 per 1,000 characters | Generated speech only |
 | ElevenLabs Scribe v2 Realtime | $0.39 per input hour | Streaming transcription only |
 | OpenAI gpt-realtime-2.1 | Audio input $32/output $64 per million tokens; text input $4/output $24 | Modality-specific token usage |
 
-Sources: [Grok pricing](https://docs.x.ai/developers/models),
+Sources: [Grok pricing](https://docs.x.ai/developers/pricing),
 [ElevenLabs API pricing](https://elevenlabs.io/pricing/api),
 [OpenAI pricing](https://developers.openai.com/api/docs/pricing).
 
-For an illustrative 20-minute session with 10,000 generated characters and 20
-minutes of streaming transcription, v4 Turbo plus Scribe costs $0.24 during the
-promotion or $0.53 at the regular rate, before text inference, tools and account
-minimums. Grok's listed session rate gives $1.60. This arithmetic assumes those
-usage quantities; it is not a like-for-like quality or billing comparison. A
-character-priced TTS minute is an estimate of generated speech, not a session
-minute. Do not select the permanent provider on the short promotion or advertise
-the TTS-only total as the full conversation cost.
+For an illustrative workload with 10,000 generated characters and 20 minutes of
+streaming transcription, v4 Turbo plus Scribe costs $0.24 during the promotion or
+$0.53 at the regular rate, before text inference, tools and account minimums.
+If Grok bills 20 minutes and 10 text inputs, its published rates give $1.64.
+That billed-minute quantity is an assumption: the inspected pricing page does
+not establish how connected time, silence or input/output speech map to minutes.
+Neither connected duration nor summed input/output audio proves the billed total.
+These are separate usage examples, not a matched quality or billing comparison.
+Confirm metering and actual account usage before estimating savings. Do not select
+the permanent provider on the short promotion or advertise a TTS-only total as the
+full conversation cost.
 
 Keep Ara/Orion native conversation as the accepted primary choice, OpenAI as the
 separate alternative and ElevenLabs as the explicit account-voice component path.
