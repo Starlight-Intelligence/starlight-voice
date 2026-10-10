@@ -63,12 +63,22 @@ def _llm_service(settings: Settings):
 
 
 def _tts_service(settings: Settings):
-    """Cloud TTS. Default ElevenLabs Flash v2.5 streaming (live ELEVENLABS_API_KEY)."""
+    """Select the provider protocol before constructing an optional Pipecat service."""
     if settings.tts_engine != "elevenlabs":
         raise adapters.VoiceDepsUnavailable(f"TTS engine '{settings.tts_engine}' is not implemented in this graph")
+    if settings.tts_model in {"eleven_v4_turbo", "eleven_v3_conversational"}:
+        api_key = os.environ.get("ELEVENLABS_API_KEY", "")
+        if not api_key.strip() or not settings.tts_voice_id.strip():
+            raise adapters.VoiceDepsUnavailable(
+                "Dialogue TTS needs ELEVENLABS_API_KEY and an explicit STARLIGHT_TTS_VOICE_ID"
+            )
+        from .adapters.eleven_dialogue_pipecat import create_dialogue_tts
+
+        return create_dialogue_tts(api_key=api_key, voice_id=settings.tts_voice_id,
+                                   model=settings.tts_model)
     if settings.tts_model not in {"eleven_flash_v2_5", "eleven_flash_v2", "eleven_multilingual_v2"}:
         raise adapters.VoiceDepsUnavailable(
-            f"TTS model '{settings.tts_model}' needs the dialogue adapter; this Pipecat graph uses the TTS endpoint"
+            f"TTS model '{settings.tts_model}' is not implemented in this graph"
         )
     from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 

@@ -32,9 +32,25 @@ def test_selected_flash_model_and_voice_reach_the_factory(monkeypatch):
     assert result["voice_id"] == "chosen-voice"
 
 
-def test_dialogue_models_cannot_be_sent_to_the_flash_endpoint():
-    with pytest.raises(adapters.VoiceDepsUnavailable, match="dialogue"):
+def test_dialogue_models_require_an_explicit_voice_before_optional_imports(monkeypatch):
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    with pytest.raises(adapters.VoiceDepsUnavailable, match="explicit STARLIGHT_TTS_VOICE_ID"):
         _tts_service(Settings(tts_model="eleven_v4_turbo"))
+
+
+@pytest.mark.parametrize("model", ["eleven_v4_turbo", "eleven_v3_conversational"])
+def test_dialogue_model_uses_its_own_factory_and_never_flash(monkeypatch, model):
+    from starlight_voice.adapters import eleven_dialogue_pipecat
+
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+    monkeypatch.setattr(eleven_dialogue_pipecat, "create_dialogue_tts", lambda **kw: kw)
+    result = _tts_service(Settings(tts_model=model, tts_voice_id="chosen"))
+    assert result == {"api_key": "test-key", "voice_id": "chosen", "model": model}
+
+
+def test_unknown_tts_model_is_rejected_before_imports():
+    with pytest.raises(adapters.VoiceDepsUnavailable, match="not implemented"):
+        _tts_service(Settings(tts_model="unknown"))
 
 
 def test_memory_frame_retrieval_is_async_and_never_adds_a_policy_message(monkeypatch):

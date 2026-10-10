@@ -22,6 +22,7 @@ What exists today:
 - browser automation adapter seam with safe dry-run mode
 - public landing site (`site/`) and a live operator console (`dashboard/`) sharing one design system
 - native Grok WebSocket and OpenAI WebRTC conversation paths with a local credential broker and scoped read tools; live audio remains unverified
+- selectable ElevenLabs v4 Turbo/v3 Conversational dialogue binding for the Pipecat component graph, requiring an explicit account voice; device playback remains unverified
 - benchmark smoke scripts and GitHub Actions CI
 - committed `Cargo.lock` for reproducible builds
 - first-principles spec at `docs/SPEC.md`

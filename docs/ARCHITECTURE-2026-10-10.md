@@ -11,15 +11,19 @@ permissions and memory. Long coding tasks return task IDs and outcomes asynchron
 
 ElevenLabs v4 Turbo uses the Text to Dialogue WebSocket with registered voices,
 `inputs` frames and a final `close_socket` flush. The existing Flash TTS connection
-uses a different protocol. The new `ElevenDialogue` adapter implements the dialogue
-protocol without importing Pipecat or opening devices. Its PCM/device integration
+uses a different protocol. `ElevenDialogue` implements the dialogue protocol without
+importing Pipecat or opening devices. Its lazy Pipecat binding emits 48 kHz mono
+PCM16 frames with context IDs, errors and interruption cleanup. Device playback
 still needs live verification. [Official dialogue guide](https://elevenlabs.io/docs/eleven-api/guides/how-to/websockets/realtime-tdd)
 
-The current component graph supports Groq transcription and ElevenLabs Flash or
-Multilingual v2 speech. Selecting another engine now fails explicitly instead of
-sending audio to the configured default. `STARLIGHT_TTS_MODEL` selects a supported
-model independently of the voice ID. v4 Turbo is rejected by this graph until its
-separate adapter is bound to it.
+The component graph supports Groq transcription and ElevenLabs Flash, Multilingual
+v2, v4 Turbo or v3 Conversational speech. `STARLIGHT_TTS_MODEL` selects the protocol
+independently of the voice ID. Dialogue models require an explicit
+`STARLIGHT_TTS_VOICE_ID` and `ELEVENLABS_API_KEY`. Each aggregated sentence uses a
+fresh dialogue connection and flush; prosody is not carried across sentences.
+Unknown models and engines fail before provider calls. The binding uses Pipecat
+1.3 APIs; the voice extra now requires at least that version.
+[Pipecat 1.3 TTS source](https://github.com/pipecat-ai/pipecat/blob/v1.3.0/src/pipecat/services/tts_service.py)
 
 The component default now pairs `openai/gpt-oss-120b` with the existing Cerebras
 provider pin, replacing an incompatible GPT-5/Cerebras selection. This is a
@@ -40,7 +44,7 @@ credentials, tool execution or conversational latency.
 
 ## Verification
 
-122 offline Python tests and 13 Node tests pass; two optional Pipecat suites skip.
+130 offline Python tests and 13 Node tests pass; three optional Pipecat tests skip.
 Ruff passes. The local HTTP server suite remains excluded under the no-server-start
 constraint. Hosted CI can exercise that suite on its own runners. Fake transports
 establish protocol and cleanup behavior, not live audio quality or latency.
@@ -107,8 +111,8 @@ claim follows until a real browser/session is measured.
 
 ## Remaining work
 
-Bind the ElevenLabs dialogue adapter to the component pipeline and a selected voice
-identity; connect durable dispatch/approval, verified memory deployment and turn
+Select and listen to an account voice through the ElevenLabs component pipeline;
+connect durable dispatch/approval, verified memory deployment and turn
 receipts; verify real provider authentication and audio interruption. Browser
 appearance, touch and keyboard behavior need inspection under an authorized runtime
 or preview. Compare native conversation and GPT Live delegation on matched tasks.

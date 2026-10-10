@@ -1,7 +1,7 @@
 """ElevenLabs v4 Turbo's dialogue protocol, separate from the Flash TTS socket.
 
 No device, server or connection opens on import. stream() is an explicit provider call.
-The returned bytes are 48 kHz PCM16, ready for a future Pipecat/device adapter.
+The returned bytes are 48 kHz PCM16; eleven_dialogue_pipecat binds them to the graph.
 """
 
 from __future__ import annotations
