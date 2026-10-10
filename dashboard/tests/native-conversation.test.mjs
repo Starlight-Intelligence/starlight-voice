@@ -5,6 +5,214 @@ import { NativeConversation, PcmPlayback, ToolBatch, TurnObservations, decodePcm
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
+for (const failing of ["track", "channel", "peer", "audio", "playback", "capture", "context"]) {
+  test(`Stop keeps releasing independent resources after ${failing} throws`, async () => {
+    const attempted = [], requests = [], states = [];
+    const close = (name) => { attempted.push(name); if (name === failing) throw new Error("private device detail"); };
+    const conversation = new NativeConversation({ onState: (state) => states.push(state), fetchFn: async (path) => {
+      requests.push(path); return { ok: true, json: async () => ({ ok: true }) };
+    } });
+    conversation.active = true;
+    conversation.session = { session_id: "old-session", capability: "old-cap" };
+    conversation.stream = { getTracks: () => [{ enabled: true, stop: () => close("track") }] };
+    conversation.channel = { close: () => close("channel") };
+    conversation.peer = { close: () => close("peer") };
+    conversation.audio = { pause: () => close("audio"), srcObject: {} };
+    conversation.playback = { interrupt: () => close("playback") };
+    conversation.capture = { port: {}, disconnect: () => close("capture") };
+    conversation.context = { close: () => close("context") };
+    await conversation.stop();
+    assert.deepEqual(attempted, ["track", "channel", "peer", "audio", "playback", "capture", "context"]);
+    assert.deepEqual(requests, ["/voice/stop"]);
+    assert.equal(conversation.cleanupFailed, true);
+    assert.equal(states.at(-1).error, true);
+    assert.ok(!states.at(-1).label.includes("private"));
+  });
+}
+
+test("rejected audio closure blocks new capture until an explicit retry releases it", async () => {
+  let fails = true, captures = 0, closes = 0;
+  const states = [];
+  const conversation = new NativeConversation({ onState: (state) => states.push(state),
+    media: { getUserMedia: async () => { captures++; throw new Error("Unexpected capture"); } },
+  });
+  conversation.context = { close: async () => { closes++; if (fails) throw new Error("private close failure"); } };
+  await conversation.stop();
+  assert.equal(conversation.cleanupFailed, true);
+  assert.match(states.at(-1).label, /retry cleanup/i);
+  await conversation.start("openai", "marin");
+  assert.equal(captures, 0);
+  fails = false;
+  await conversation.stop();
+  assert.equal(closes, 2);
+  assert.equal(conversation.cleanupFailed, false);
+  assert.equal(states.at(-1).error, false);
+});
+
+test("new Start cannot overlap pending Stop or ask for another microphone", async () => {
+  const closing = deferred(); let captures = 0;
+  const conversation = new NativeConversation({ media: { getUserMedia: async () => {
+    captures++; throw new Error("Unexpected capture");
+  } } });
+  conversation.context = { close: () => closing.promise };
+  const stopped = conversation.stop();
+  try {
+    await conversation.start("openai", "marin");
+    assert.equal(captures, 0);
+    assert.equal(conversation.stopping, true);
+  } finally { closing.resolve(); await stopped; }
+});
+
+test("stalled context close cannot prevent bounded Stop and old-session release", async () => {
+  const closing = deferred(), requests = []; let timer;
+  const conversation = new NativeConversation({ fetchFn: async (path) => {
+    requests.push(path); return { ok: true, json: async () => ({ ok: true }) };
+  } });
+  conversation.context = { close: () => closing.promise };
+  conversation.session = { session_id: "old-session", capability: "old-cap" };
+  const stopped = conversation.stop();
+  try {
+    const result = await Promise.race([stopped.then(() => "stopped"), new Promise((resolve) => {
+      timer = setTimeout(() => resolve("blocked"), 1400);
+    })]);
+    assert.equal(result, "stopped");
+    assert.equal(conversation.cleanupFailed, true);
+    assert.deepEqual(requests, ["/voice/stop"]);
+  } finally { clearTimeout(timer); closing.resolve(); await stopped; }
+  await flush();
+  assert.equal(conversation.cleanupFailed, false);
+});
+
+test("a late rejected play promise cannot stop a replacement session", async () => {
+  let peer, rejectPlay;
+  class Peer {
+    constructor() { peer = this; }
+    addTrack() {}
+    createDataChannel() { return { readyState: "open", close() {} }; }
+    async createOffer() { return { sdp: "fixture-offer" }; }
+    async setLocalDescription() {}
+    async setRemoteDescription() {}
+    close() {}
+  }
+  const play = new Promise((_resolve, reject) => { rejectPlay = reject; });
+  const conversation = new NativeConversation({ PeerClass: Peer,
+    audioFactory: () => ({ play: () => play, pause() {} }),
+    fetchFn: async (path) => path.startsWith("https:") ? { ok: true, text: async () => "fixture-answer" }
+      : { ok: true, json: async () => ({ ok: true }) },
+  });
+  conversation.active = true; conversation.epoch = 1; conversation.abort = new AbortController();
+  conversation.stream = { getTracks: () => [] };
+  conversation.session = { session_id: "old", capability: "old-cap", client_secret: { value: "fixture-token" } };
+  await conversation.connectOpenAI(1);
+  peer.ontrack({ streams: [{}] });
+  await conversation.stop();
+  conversation.epoch++; conversation.active = true;
+  conversation.session = { session_id: "replacement", capability: "replacement-cap" };
+  try {
+    rejectPlay(new Error("Playback was denied after Stop")); await flush();
+    assert.equal(conversation.active, true);
+    assert.equal(conversation.session.session_id, "replacement");
+  } finally { await conversation.stop(); }
+});
+
+test("mounted cleanup states keep Start blocked and expose an explicit retry", async () => {
+  const page = fakeVoiceDocument(); let fails = true;
+  const conversation = mountNativeConversation(page.doc, { lifecycleTarget: page.lifecycle,
+    fetchFn: async () => ({ ok: true, json: async () => ({ providers: [{ id: "grok", configured: true, voices: ["ara"] }] }) }),
+  });
+  await conversation.mountReady;
+  conversation.context = { close: async () => { if (fails) throw new Error("close denied"); } };
+  await conversation.stop();
+  assert.equal(page.elements.voiceStart.disabled, true);
+  assert.equal(page.elements.voiceStop.disabled, false);
+  assert.equal(page.elements.voiceStop.textContent, "Retry cleanup");
+  fails = false; await conversation.stop();
+  assert.equal(page.elements.voiceStart.disabled, false);
+  assert.equal(page.elements.voiceStop.textContent, "Stop");
+  await conversation.dispose();
+});
+
+test("Stop attempts every track even when the first one fails", async () => {
+  const stopped = [], tracks = [0, 1].map((index) => ({ enabled: true, stop() {
+    stopped.push(index); if (index === 0) throw new Error("track failure");
+  } }));
+  const conversation = new NativeConversation();
+  conversation.stream = { getTracks: () => tracks };
+  await conversation.stop();
+  assert.deepEqual(stopped, [0, 1]);
+  assert.ok(tracks.every((track) => track.enabled === false));
+});
+
+test("parallel Stop calls share cleanup and release the captured session once", async () => {
+  const closing = deferred(), requests = []; let closes = 0;
+  const conversation = new NativeConversation({ fetchFn: async (path) => {
+    requests.push(path); return { ok: true, json: async () => ({ ok: true }) };
+  } });
+  conversation.context = { close: () => { closes++; return closing.promise; } };
+  conversation.session = { session_id: "old", capability: "old-cap" };
+  const first = conversation.stop(), second = conversation.stop();
+  try { assert.equal(first, second); await flush(); assert.equal(closes, 1); }
+  finally { closing.resolve(); await Promise.all([first, second]); }
+  assert.deepEqual(requests, ["/voice/stop"]);
+});
+
+test("late discovery cannot re-enable Start over a failed audio cleanup", async () => {
+  const page = fakeVoiceDocument(), discovery = deferred(); let fails = true;
+  const conversation = mountNativeConversation(page.doc, { lifecycleTarget: page.lifecycle, fetchFn: () => discovery.promise });
+  conversation.context = { close: async () => { if (fails) throw new Error("close failed"); } };
+  await conversation.stop();
+  discovery.resolve({ ok: true, json: async () => ({ providers: [{ id: "grok", configured: true, voices: ["ara"] }] }) });
+  await conversation.mountReady;
+  assert.equal(page.elements.voiceStart.disabled, true);
+  assert.equal(page.elements.voiceStop.textContent, "Retry cleanup");
+  fails = false; await conversation.stop(); await conversation.dispose();
+});
+
+test("a failing status renderer cannot prevent media cleanup or authority release", async () => {
+  const closed = [], requests = [];
+  const conversation = new NativeConversation({ onState: () => { throw new Error("render failed"); },
+    fetchFn: async (path) => { requests.push(path); return { ok: true, json: async () => ({ ok: true }) }; },
+  });
+  conversation.stream = { getTracks: () => [{ stop: () => closed.push("track") }] };
+  conversation.session = { session_id: "old", capability: "old-cap" };
+  await conversation.stop();
+  assert.deepEqual(closed, ["track"]);
+  assert.deepEqual(requests, ["/voice/stop"]);
+  assert.equal(conversation.stopping, false);
+});
+
+test("stalled metadata cannot keep Stop waiting after its flush allowance", async () => {
+  const write = deferred(), requests = []; let timer;
+  const conversation = new NativeConversation({ fetchFn: async (path) => {
+    requests.push(path); return { ok: true, json: async () => ({ ok: true }) };
+  } });
+  conversation.session = { session_id: "old", capability: "old-cap" };
+  conversation.observationWrites = new Set([write.promise]);
+  conversation.observationAbort = new AbortController();
+  const abort = conversation.observationAbort;
+  const stopped = conversation.stop();
+  try {
+    const result = await Promise.race([stopped.then(() => "stopped"), new Promise((resolve) => {
+      timer = setTimeout(() => resolve("blocked"), 2400);
+    })]);
+    assert.equal(result, "stopped"); assert.equal(abort.signal.aborted, true);
+    assert.deepEqual(requests, ["/voice/stop"]);
+  } finally { clearTimeout(timer); write.resolve(); await stopped; }
+});
+
+test("PCM interruption attempts later sources after an earlier disconnect fails", () => {
+  const attempted = [], playback = new PcmPlayback({ currentTime: 0 }); let fails = true;
+  const first = { stop: () => attempted.push("first-stop"), disconnect() {
+    attempted.push("first-disconnect"); if (fails) throw new Error("disconnect failed");
+  } };
+  const second = { stop: () => attempted.push("second-stop"), disconnect: () => attempted.push("second-disconnect") };
+  playback.nodes.add(first); playback.nodes.add(second);
+  assert.throws(() => playback.interrupt(), /cleanup/);
+  assert.deepEqual(attempted, ["first-stop", "first-disconnect", "second-stop", "second-disconnect"]);
+  assert.equal(playback.nodes.size, 1);
+  fails = false; playback.interrupt(); assert.equal(playback.nodes.size, 0);
+});
+
 test("default browser fetch keeps the global receiver for broker requests", async () => {
   const original = globalThis.fetch;
   const requests = [];

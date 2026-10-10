@@ -4,6 +4,15 @@ export function isMissionText(text, maxLength = 900) {
     !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069\ud800-\udfff]/u.test(text);
 }
 
+const CLEANUP_REQUIRED = "Audio cleanup is incomplete. Retry cleanup or reload this page.";
+
+async function waitForSettled(promises, milliseconds) {
+  let timer;
+  try {
+    await Promise.race([Promise.allSettled(promises), new Promise((resolve) => { timer = setTimeout(resolve, milliseconds); })]);
+  } finally { clearTimeout(timer); }
+}
+
 // Native audio transports. No speechSynthesis, persistent tokens or automatic mic start.
 export function pcm16Base64(samples) {
   const bytes = new Uint8Array(samples.length * 2);
@@ -117,8 +126,13 @@ export class PcmPlayback {
   interrupt() {
     const heardMs = this.firstStart === null ? 0 : Math.max(0, Math.floor((Math.min(this.context.currentTime, this.nextTime) - this.firstStart) * 1000));
     const itemId = this.itemId;
-    for (const node of this.nodes) { node.onended = null; try { node.stop(); } catch { /* already ended */ } node.disconnect(); }
-    this.nodes.clear(); this.nextTime = 0; this.firstStart = null; this.itemId = null;
+    for (const node of this.nodes) {
+      node.onended = null;
+      try { node.stop(); } catch { /* already ended */ }
+      try { node.disconnect(); this.nodes.delete(node); } catch { /* retained for cleanup retry */ }
+    }
+    this.nextTime = 0; this.firstStart = null; this.itemId = null;
+    if (this.nodes.size) throw new Error(CLEANUP_REQUIRED);
     return { itemId, heardMs };
   }
 }
@@ -137,8 +151,13 @@ export class NativeConversation {
     }
     Object.assign(this, { onState, onText, onMissionDraft, fetchFn, media, AudioContextClass, WebSocketClass, PeerClass, WorkletClass, audioFactory, brokerPrefix, workletPath });
     this.epoch = 0; this.responseGeneration = 0; this.active = false; this.ready = false; this.muted = false;
+    this.stopping = false; this.cleanupTasks = new Set(); this.stopPromise = null;
   }
-  state(label, error = false) { this.onState({ label, error, active: this.active, ready: this.ready, muted: this.muted }); }
+  get cleanupFailed() { return this.cleanupTasks.size > 0; }
+  state(label, error = false) {
+    this.onState({ label, error, active: this.active, ready: this.ready, muted: this.muted,
+      stopping: this.stopping, cleanupFailed: this.cleanupFailed });
+  }
   endpoint(action) {
     if (!["session", "tool", "observation", "stop", "capabilities"].includes(action)) throw new Error("Unknown voice broker action");
     return `${this.brokerPrefix}/${action}`;
@@ -173,7 +192,8 @@ export class NativeConversation {
     this.channel.send(JSON.stringify(event));
   }
   async start(provider, voice) {
-    if (this.active) return;
+    if (this.active || this.stopping) return;
+    if (this.cleanupFailed) { this.state(CLEANUP_REQUIRED, true); return; }
     const epoch = ++this.epoch;
     this.active = true; this.ready = false; this.muted = false; this.blockAudio = false; this.responding = false; this.interrupted = false;
     this.providerResponseId = null;
@@ -198,7 +218,10 @@ export class NativeConversation {
       this.observationAbort = new AbortController();
       const writes = this.observationWrites, observationAbort = this.observationAbort;
       this.observations = new TurnObservations((observation) => {
-        if (writes.size >= 3) { this.state("Listening · turn history fell behind", true); return; }
+        if (writes.size >= 3) {
+          if (epoch === this.epoch) this.state("Listening · turn history fell behind", true);
+          return;
+        }
         const request = this.post("/voice/observation", { session_id: session.session_id, observation }, {
           capability: session.capability,
           signal: AbortSignal.any([observationAbort.signal, AbortSignal.timeout(2000)]), keepalive: true,
@@ -260,7 +283,7 @@ export class NativeConversation {
     pc.ontrack = ({ streams }) => {
       if (epoch !== this.epoch) return;
       audio.srcObject = streams[0];
-      audio.play().catch(() => this.stop("Audio playback was blocked. Allow audio, then reconnect.", true));
+      audio.play().catch(() => { if (epoch === this.epoch) this.stop("Audio playback was blocked. Allow audio, then reconnect.", true); });
     };
     pc.onconnectionstatechange = () => {
       if (epoch === this.epoch && ["failed", "disconnected", "closed"].includes(pc.connectionState)) this.stop("Voice connection ended");
@@ -355,29 +378,77 @@ export class NativeConversation {
       });
     } catch { /* Local authority expires even if the cleanup request cannot arrive. */ }
   }
-  async stop(label = "Stopped", error = false) {
-    this.observations?.done("stopped"); this.observations = null;
+  rememberCleanup(run) { this.cleanupTasks.add({ run, pending: null }); }
+  retryCleanup() {
+    const pending = [];
+    for (const task of this.cleanupTasks) {
+      if (!task.pending) {
+        try {
+          const result = task.run();
+          if (result && typeof result.then === "function") {
+            task.pending = Promise.resolve(result).then(() => {
+              this.cleanupTasks.delete(task);
+              if (!this.stopping && !this.active && !this.cleanupFailed) {
+                try { this.state("Stopped"); } catch { /* An unavailable view cannot retain audio resources. */ }
+              }
+            }, () => { task.pending = null; });
+          } else this.cleanupTasks.delete(task);
+        } catch { /* Retain only this failed action; other resources still close. */ }
+      }
+      if (task.pending) pending.push(task.pending);
+    }
+    return pending;
+  }
+  stop(label = "Stopped", error = false) {
+    if (this.stopPromise) return this.stopPromise;
+    this.stopping = true;
     ++this.epoch; this.active = false; this.ready = false;
     clearTimeout(this.readyTimer); clearTimeout(this.limitTimer); this.abort?.abort();
-    this.stream?.getTracks().forEach((track) => { track.onended = null; track.stop(); }); this.stream = null;
-    if (this.channel) {
-      this.channel.onopen = this.channel.onclose = this.channel.onerror = this.channel.onmessage = null;
-      this.channel.close(); this.channel = null;
-    }
-    this.peer?.close(); this.peer = null;
-    if (this.audio) { this.audio.pause(); this.audio.srcObject = null; this.audio = null; }
-    this.playback?.interrupt(); this.playback = null;
-    for (const node of [this.source, this.capture, this.silent]) { if (node) node.disconnect(); }
-    if (this.capture) this.capture.port.onmessage = null;
+    const { stream, channel, peer, audio, playback, source, capture, silent, context, session, observations } = this;
+    this.stream = this.channel = this.peer = this.audio = this.playback = this.context = this.session = this.observations = null;
     this.source = this.capture = this.silent = null;
-    const context = this.context; this.context = null;
-    const session = this.session; this.session = null; this.tools = null;
-    const writes = [...(this.observationWrites || [])];
+    this.tools = null;
+    const writeSet = this.observationWrites;
+    const writes = [...(writeSet || [])];
     const observationAbort = this.observationAbort;
-    this.state(label, error);
-    await Promise.allSettled([context?.close(), ...writes]);
-    observationAbort?.abort();
-    await this.releaseSession(session);
+    this.observationWrites = this.observationAbort = null;
+    this.stopPromise = Promise.resolve().then(async () => {
+      try { this.state("Stopping…"); } catch { /* Cleanup must survive a detached or failing view. */ }
+      try { observations?.done("stopped"); } catch { /* History cannot prevent media revocation. */ }
+      // Include the final observation created above, without keeping its request set.
+      for (const write of writeSet || []) if (!writes.includes(write)) writes.push(write);
+      if (stream) this.rememberCleanup(() => {
+        let failed = false;
+        for (const track of stream.getTracks()) {
+          track.onended = null; track.enabled = false;
+          try { track.stop(); } catch { failed = true; }
+        }
+        if (failed) throw new Error(CLEANUP_REQUIRED);
+      });
+      if (channel) this.rememberCleanup(() => {
+        channel.onopen = channel.onclose = channel.onerror = channel.onmessage = null;
+        channel.close();
+      });
+      if (peer) this.rememberCleanup(() => { peer.ontrack = peer.onconnectionstatechange = null; peer.close(); });
+      if (audio) this.rememberCleanup(() => { try { audio.pause(); } finally { audio.srcObject = null; } });
+      if (playback) this.rememberCleanup(() => playback.interrupt());
+      for (const node of [source, capture, silent]) if (node) this.rememberCleanup(() => {
+        if (node === capture) node.port.onmessage = null;
+        node.disconnect();
+      });
+      if (context) this.rememberCleanup(() => context.close());
+      try {
+        await waitForSettled(this.retryCleanup(), 1000);
+        await waitForSettled(writes, 2000);
+      } finally {
+        observationAbort?.abort();
+        await this.releaseSession(session);
+        this.stopping = false; this.stopPromise = null;
+        try { this.state(this.cleanupFailed ? CLEANUP_REQUIRED : label, this.cleanupFailed || error); }
+        catch { /* The caller may have disposed its view while release was pending. */ }
+      }
+    });
+    return this.stopPromise;
   }
 }
 
@@ -389,7 +460,7 @@ export function mountNativeConversation(doc = document, options = {}) {
   const status = doc.getElementById("voiceStatus"), caption = doc.getElementById("voiceCaption");
   const mission = doc.getElementById("voiceMissionDraft");
   if (![start, stop, mute, provider, voice, status, caption].every(Boolean)) throw new Error("Native voice controls are missing");
-  let disposed = false;
+  let disposed = false, configured = false;
   const discovery = new AbortController(), listeners = [];
   const bind = (target, name, handler) => {
     target.addEventListener(name, handler); listeners.push(() => target.removeEventListener(name, handler));
@@ -398,8 +469,11 @@ export function mountNativeConversation(doc = document, options = {}) {
     onState: (state) => {
       if (disposed) return;
       status.textContent = state.label; status.classList.toggle("err", state.error);
-      start.disabled = state.active; stop.disabled = !state.active; mute.disabled = !state.ready;
-      provider.disabled = voice.disabled = state.active;
+      const blocked = state.active || state.stopping || state.cleanupFailed;
+      start.disabled = !configured || blocked;
+      stop.disabled = state.stopping || (!state.active && !state.cleanupFailed); mute.disabled = !state.ready;
+      provider.disabled = voice.disabled = !configured || blocked;
+      stop.textContent = state.cleanupFailed && !state.stopping ? "Retry cleanup" : "Stop";
       mute.textContent = state.muted ? "Unmute" : "Mute"; mute.setAttribute("aria-pressed", String(state.muted));
     },
     onText: (text) => { if (!disposed) caption.textContent = (caption.textContent + text).slice(-2000); },
@@ -447,7 +521,12 @@ export function mountNativeConversation(doc = document, options = {}) {
       }
     };
     bind(provider, "change", chooseVoice);
-    if (choices.length) { provider.value = choices[0].id; chooseVoice(); start.disabled = provider.disabled = voice.disabled = false; status.textContent = "Ready · microphone off"; }
+    if (choices.length) {
+      configured = true; provider.value = choices[0].id; chooseVoice();
+      if (!conversation.active && !conversation.stopping && !conversation.cleanupFailed) conversation.state("Ready · microphone off");
+      else if (conversation.stopping) conversation.state("Stopping…");
+      else if (conversation.cleanupFailed) conversation.state(CLEANUP_REQUIRED, true);
+    }
     else { status.textContent = "Configure XAI_API_KEY or OPENAI_API_KEY on the server to enable native voice"; }
   } catch { if (!disposed) status.textContent = "Native voice broker unavailable"; } })();
   return conversation;

@@ -79,6 +79,30 @@ after interruption and bounds both upload and playback backlogs. Parallel functi
 results arrive before one continuation response; cancelled turns do not trigger
 that continuation.
 
+Stop invalidates the session epoch immediately, then attempts each owned resource
+independently. One thrown close or disconnected view cannot skip later resources
+or local authority release. Parallel Stop calls share the same cleanup operation.
+New capture stays blocked while cleanup is pending or a failed action remains.
+The page shows "Stopping…", then either completion or an explicit "Retry cleanup"
+action with a reload fallback. Successful actions are discarded; retries retain
+only failed actions and reuse an already-pending close promise. Late close success
+clears the block, and a rejected playback promise from an old epoch cannot stop
+a replacement session.
+
+The foreground timer allows one second for asynchronous resource close and two
+seconds for final metadata flush before the existing three-second authority
+release request. Expired waits do not claim a resource was released. Browser
+timer scheduling and actual device cleanup remain unverified; this is not a hard
+wall-clock or provider-billing bound. A new page or separate client instance does
+not inherit another instance's cleanup state. See the [Web Audio close contract](https://webaudio.github.io/web-audio-api/#dom-audiocontext-close)
+and [media playback promise contract](https://html.spec.whatwg.org/multipage/media.html#dom-media-play).
+
+| Before | After | Why |
+| --- | --- | --- |
+| Completion reported while audio close was pending | Visible stopping state; Start stays disabled | Avoid overlapping capture and uncertain cleanup |
+| A failed close could skip remaining cleanup | Independent close attempts and retained retry actions | Release unaffected resources and preserve recovery |
+| Old playback failure could stop the replacement session | Playback rejection checks its original epoch | Keep late errors with their owning session |
+
 These are local authority limits, not provider spending enforcement. Ephemeral
 credentials can establish multiple provider sessions until expiry, provider session
 settings can be client-controlled, and closing local authority cannot revoke a
