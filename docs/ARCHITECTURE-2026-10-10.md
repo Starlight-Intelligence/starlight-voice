@@ -133,6 +133,17 @@ Dispatch and approval currently return `blocked`, `queued: false`, `approved: fa
 They must connect to the existing durable managed intake before claiming otherwise.
 This browser broker does not run coding CLIs or install another task queue.
 
+Each tool call id is bound to its validated tool name and arguments using a
+canonical JSON fingerprint held in session memory. Reusing an id for a different
+tool or query returns a redacted 409 before reading or spending another tool call,
+including while the original read is pending or after cancellation. Identical
+retries retain the original result or pending/cancelled status; reordered argument
+keys are equivalent. A cancelled read needs a new call id for a fresh attempt.
+The existing 20-call limit bounds these fingerprints. Neither fingerprints nor
+arguments are added to persisted turn observations. This prevents a reused id
+from presenting an old project summary or mission draft as the answer to a new
+request. Session authorization and expiry are still checked before replay.
+
 `prepare_mission` accepts only a bounded objective and acceptance text (15–900
 characters each, measured as browser UTF-16 units). The broker and shared host
 validator reject C0/C1 controls except tab/line breaks, explicit bidi embeddings,

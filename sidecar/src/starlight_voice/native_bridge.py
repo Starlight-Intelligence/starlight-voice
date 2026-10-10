@@ -84,6 +84,7 @@ class Session:
     remaining_calls: int = 20
     calls: dict[str, dict | None] = field(default_factory=dict)
     call_names: dict[str, str] = field(default_factory=dict)
+    call_fingerprints: dict[str, str] = field(default_factory=dict)
     observations: dict[int, str] = field(default_factory=dict)
     provider: str = ""
     voice: str = ""
@@ -252,9 +253,13 @@ class NativeBridge:
                 raise BridgeError("Query exceeds the gateway's 512 UTF-16 unit limit")
         elif args:
             raise BridgeError("This tool accepts no arguments")
+        fingerprint = hashlib.sha256(json.dumps({"name": name, "arguments": args}, sort_keys=True,
+                                                separators=(",", ":")).encode()).hexdigest()
         with self.lock:
             session = self.authorize(payload, capability)
             if call_id in session.calls:
+                if session.call_fingerprints[call_id] != fingerprint:
+                    raise BridgeError("Tool call id belongs to a different request", 409)
                 cached = session.calls[call_id]
                 return cached or {"status": "blocked", "reason": "This call is already in progress"}
             if session.remaining_calls <= 0:
@@ -262,6 +267,7 @@ class NativeBridge:
             session.remaining_calls -= 1
             session.calls[call_id] = None
             session.call_names[call_id] = name
+            session.call_fingerprints[call_id] = fingerprint
         try:
             result = await self._read(name, args)
         except asyncio.CancelledError:

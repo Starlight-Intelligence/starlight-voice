@@ -59,6 +59,91 @@ def test_authority_and_blocked_writes_are_honest(bridge):
     assert bridge.session.remaining_calls == 19
 
 
+@pytest.mark.parametrize("phase", ["completed", "pending", "cancelled"])
+@pytest.mark.parametrize("change", ["query", "tool"])
+def test_tool_call_identity_cannot_replay_a_different_request(bridge, monkeypatch, phase, change):
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        reads = []
+
+        async def read(name, arguments):
+            reads.append((name, arguments))
+            entered.set()
+            if phase != "completed":
+                await release.wait()
+            return {"status": "ok", "reference": "First approved project summary"}
+
+        monkeypatch.setattr(bridge, "_read", read)
+        session = await bridge.start({"provider": "grok", "voice": "ara"})
+        first = call(session, name="project_context", arguments={"query": "First project"})
+        changed = {**first, "arguments": {"query": "Other project"}} if change == "query" else {**first, "name": "request_approval"}
+        task = asyncio.create_task(bridge.tool(first, session["capability"]))
+        try:
+            await entered.wait()
+            if phase == "completed":
+                await task
+            elif phase == "cancelled":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            with pytest.raises(BridgeError) as error:
+                await bridge.tool(changed, session["capability"])
+            assert error.value.status == 409
+            assert "First project" not in str(error.value) and "Other project" not in str(error.value)
+            assert bridge.session.remaining_calls == 19
+            assert reads == [("project_context", {"query": "First project"})]
+        finally:
+            release.set()
+            if not task.done():
+                await task
+
+    run(scenario())
+
+
+def test_identical_draft_retry_ignores_argument_key_order(bridge):
+    session = start(bridge)
+    arguments = {"objective": "Improve the existing voice conversation", "acceptance": "Verify interruption and microphone cleanup"}
+    first = call(session, name="prepare_mission", arguments=arguments)
+    result = run(bridge.tool(first, session["capability"]))
+    retry = {**first, "arguments": dict(reversed(list(arguments.items())))}
+    assert run(bridge.tool(retry, session["capability"])) == result
+    assert bridge.session.remaining_calls == 19
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_identical_read_retry_preserves_pending_or_cancelled_result(bridge, monkeypatch, cancelled):
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        reads = []
+
+        async def read(name, arguments):
+            reads.append(name)
+            entered.set()
+            await release.wait()
+            return {"status": "ok"}
+
+        monkeypatch.setattr(bridge, "_read", read)
+        session = await bridge.start({"provider": "grok", "voice": "ara"})
+        payload = call(session, name="project_context", arguments={"query": "First project"})
+        task = asyncio.create_task(bridge.tool(payload, session["capability"]))
+        try:
+            await entered.wait()
+            if cancelled:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            retry = await bridge.tool(payload, session["capability"])
+            assert retry == ({"status": "unavailable", "reason": "Scoped read was cancelled"} if cancelled
+                             else {"status": "blocked", "reason": "This call is already in progress"})
+            assert reads == ["project_context"] and bridge.session.remaining_calls == 19
+        finally:
+            release.set()
+            if not task.done():
+                await task
+
+    run(scenario())
+
+
 def test_node_health_uses_protocol_ping_and_never_scans_telemetry(bridge, monkeypatch):
     monkeypatch.setenv("STARLIGHT_TOOL_PLANE_TOKEN", "server-only-secret")
     seen = []
