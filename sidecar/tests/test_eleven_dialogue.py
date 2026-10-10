@@ -51,6 +51,7 @@ def test_v4_uses_dialogue_endpoint_registration_flush_and_pcm():
         assert "model_id=eleven_v4_turbo" in captured["url"]
         assert "output_format=pcm_48000" in captured["url"]
         assert "secret-test" not in captured["url"]
+        assert captured["proxy"] is None
         assert socket.sent == [{"voices": ["chosen"]},
                                {"inputs": [{"text": "Hi.", "voice_id": "chosen", "new_turn": False}]},
                                {"close_socket": True}]

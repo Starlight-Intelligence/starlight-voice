@@ -17,7 +17,7 @@ voice = [
   # input manually, so they are deferred to the `voice-turn` extra (hands-free/barge-in phase).
   "pipecat-ai[groq,elevenlabs,cartesia,openrouter]>=1.0,<2",
   "pyaudio>=0.2.14",            # PortAudio/WASAPI local mic capture + speaker playback (needed even cloud-first)
-  "websockets>=12",            # ElevenLabs Flash v2.5 stream-input over raw websockets (SDK-free path)
+  "websockets>=15",            # asyncio client + explicit proxy control for dialogue streaming
 ]
 voice-turn = [
   "pipecat-ai[silero,local-smart-turn-v3]>=1.0,<2",  # auto turn-detection + barge-in (later phase; may pull torch)

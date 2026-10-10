@@ -34,15 +34,15 @@ class ElevenDialogue:
 
     async def stream(self, text_chunks: AsyncIterable[str]) -> AsyncIterator[bytes]:
         connect = self._connect
-        if connect is None:
-            from websockets.asyncio.client import connect
         url = "wss://api.elevenlabs.io/v1/text-to-dialogue/stream-input?" + urlencode({
             "model_id": self.model, "output_format": "pcm_48000",
         })
         try:
+            if connect is None:
+                from websockets.asyncio.client import connect
             async with asyncio.timeout(self.timeout_s):
                 async with connect(url, additional_headers={"xi-api-key": self._api_key},
-                                   open_timeout=5, close_timeout=2, max_size=2**20) as socket:
+                                   proxy=None, open_timeout=5, close_timeout=2, max_size=2**20) as socket:
                     await socket.send(json.dumps({"voices": [self.voice_id]}))
 
                     async def send_text():
