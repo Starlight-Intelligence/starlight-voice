@@ -147,7 +147,9 @@ for stateless servers. Unknown versions stop before initialization notification
 or tool access. Later responses cannot replace the session assigned at initialize.
 Timeout or caller cancellation attempts cancellation of its own in-flight request
 and DELETE within one additional 150 ms cleanup budget; initialize itself is never
-cancelled by a protocol notification. Cleanup remains best effort and preserves
+cancelled by a protocol notification. The cancellation notification has a 75 ms
+subdeadline so a stalled notification leaves time to attempt the owned-session
+DELETE. Cleanup remains best effort and preserves
 caller cancellation. See the official [lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle),
 [HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
 and [ping](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/ping) contracts.

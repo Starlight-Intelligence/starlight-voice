@@ -167,9 +167,12 @@ class LocalMcpReader:
                         async with asyncio.timeout(0.15):
                             if cancel_request is not None:
                                 try:
-                                    await request("notifications/cancelled", {
-                                        "requestId": cancel_request, "reason": "Voice read ended",
-                                    }, None)
+                                    # Keep part of the total cleanup budget for the
+                                    # owned session even if cancellation stalls.
+                                    async with asyncio.timeout(0.075):
+                                        await request("notifications/cancelled", {
+                                            "requestId": cancel_request, "reason": "Voice read ended",
+                                        }, None)
                                 except Exception:
                                     pass
                             if session_id:

@@ -325,3 +325,26 @@ def test_malformed_projection_digest_stops_before_recall(projection_id):
         asyncio.run(LocalMcpReader("http://127.0.0.1:8787/mcp", "secret", transport=mock).call("memory_recall", {"query": "Project"}, projection=True))
     assert requests[-1].method == "DELETE"
     assert all(b'memory_recall' not in request.content for request in requests)
+
+
+def test_slow_cancellation_notification_preserves_time_to_close_owned_session():
+    mock, requests = transport(identity="starlight-shared-tool-plane")
+
+    async def handler(request):
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") in {"ping", "notifications/cancelled"}:
+            requests.append(request)
+            await asyncio.sleep(1)
+        return await mock.handle_async_request(request)
+
+    started = time.monotonic()
+    with pytest.raises(ProjectionUnavailable):
+        asyncio.run(LocalMcpReader("http://127.0.0.1:8787/mcp", "secret",
+                    transport=httpx.MockTransport(handler), deadline_s=.03).ping(
+                        expected_server="starlight-shared-tool-plane"))
+    assert time.monotonic() - started < .3
+    assert requests[-1].method == "DELETE"
+    assert requests[-1].headers["mcp-session-id"] == "session-owned-by-test"
+    cancelled = [json.loads(request.content) for request in requests
+                 if request.method == "POST" and json.loads(request.content)["method"] == "notifications/cancelled"]
+    assert len(cancelled) == 1 and cancelled[0]["params"]["requestId"] == 3
