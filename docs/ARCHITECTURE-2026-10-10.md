@@ -88,6 +88,12 @@ caps/revocation require a provider-side or trusted transport-control integration
 [OpenAI credential limitations](https://developers.openai.com/api/reference/resources/realtime/subresources/client_secrets/methods/create),
 [Grok ephemeral credentials](https://docs.x.ai/developers/model-capabilities/audio/ephemeral-tokens)
 
+After a slow tool finishes, the client rechecks interruption, response generation
+and session ownership before requesting a continuation. A barge-in, replacement
+response or stopped/replaced session cannot restart the old reply. Four regression
+cases reproduced the earlier race; the unchanged parallel-tool turn still resumes
+once. These are offline event-order checks, not a live interruption measurement.
+
 Eight narrow function names follow the existing Voice Edge proposal: portfolio
 counts, local run statuses, shared-plane response health, approved memory/project
 summaries, unsaved mission drafts, dispatch and approval. Shared-plane reads use its existing authenticated
@@ -187,8 +193,43 @@ with `mountReady` for capability discovery and `dispose()` for page unmount.
 Disposal aborts discovery, removes its control and lifecycle listeners, clears
 captions and stops owned audio and session authority. It also handles discovery
 that returns after disposal. React or another host must call disposal in its
-unmount cleanup. Command Center integration still needs its actual server route
-and page; this reusable client alone does not establish that connection.
+unmount cleanup. Command Center implements its existing `/voice` page and fixed
+same-origin broker relay in [draft PR 70](https://github.com/frankxai/starlight-command-center/pull/70).
+Its three-width mission journey uses synthetic devices and the existing fixture
+proposal endpoint. Deployment and real audio acceptance remain open.
+
+## Published cost comparison
+
+Rates checked on 10 October 2026. Taxes, account credits, subscription minimums,
+tools and text-model usage can change the total. No invoice or live usage is proved.
+
+| Route | Published unit price | What it covers |
+| --- | --- | --- |
+| Grok native conversation | $0.08 per session minute | Native speech-to-speech |
+| ElevenLabs v4 Turbo | $0.011 per 1,000 characters until October 12; regular $0.04 | Generated speech only |
+| ElevenLabs v3 Conversational or Flash/Turbo | $0.04 per 1,000 characters | Generated speech only |
+| ElevenLabs Scribe v2 Realtime | $0.39 per input hour | Streaming transcription only |
+| OpenAI gpt-realtime-2.1 | Audio input $32/output $64 per million tokens; text input $4/output $24 | Modality-specific token usage |
+
+Sources: [Grok pricing](https://docs.x.ai/developers/models),
+[ElevenLabs API pricing](https://elevenlabs.io/pricing/api),
+[OpenAI pricing](https://developers.openai.com/api/docs/pricing).
+
+For an illustrative 20-minute session with 10,000 generated characters and 20
+minutes of streaming transcription, v4 Turbo plus Scribe costs $0.24 during the
+promotion or $0.53 at the regular rate, before text inference, tools and account
+minimums. Grok's listed session rate gives $1.60. This arithmetic assumes those
+usage quantities; it is not a like-for-like quality or billing comparison. A
+character-priced TTS minute is an estimate of generated speech, not a session
+minute. Do not select the permanent provider on the short promotion or advertise
+the TTS-only total as the full conversation cost.
+
+Keep Ara/Orion native conversation as the accepted primary choice, OpenAI as the
+separate alternative and ElevenLabs as the explicit account-voice component path.
+Select a deep male ElevenLabs voice by listening to the account's licensed choices;
+no voice ID or preference is inferred. Vendor TTS latency figures exclude capture,
+turn detection, retrieval, text inference, network and playback. The matched live
+comparison remains necessary before selecting a quality/latency winner.
 
 ## Remaining work
 

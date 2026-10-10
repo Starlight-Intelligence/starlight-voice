@@ -78,7 +78,7 @@ export class ToolBatch {
     const pending = this.pending.splice(0);
     if (!pending.length) return;
     await Promise.all(pending);
-    if (resume) this.send({ type: "response.create" });
+    if (typeof resume === "function" ? resume() : resume) this.send({ type: "response.create" });
   }
 }
 
@@ -130,7 +130,7 @@ export class NativeConversation {
       throw new Error("Voice worklet must be a same-origin JavaScript path");
     }
     Object.assign(this, { onState, onText, onMissionDraft, fetchFn, media, AudioContextClass, WebSocketClass, PeerClass, WorkletClass, audioFactory, brokerPrefix, workletPath });
-    this.epoch = 0; this.active = false; this.ready = false; this.muted = false;
+    this.epoch = 0; this.responseGeneration = 0; this.active = false; this.ready = false; this.muted = false;
   }
   state(label, error = false) { this.onState({ label, error, active: this.active, ready: this.ready, muted: this.muted }); }
   endpoint(action) {
@@ -295,6 +295,7 @@ export class NativeConversation {
       case "session.updated": this.listen(); break;
       case "response.created":
         if (typeof responseId === "string" && responseId === this.providerResponseId) return;
+        ++this.responseGeneration;
         this.providerResponseId = typeof responseId === "string" && responseId.length <= 128 ? responseId : null;
         this.observations?.created(); this.blockAudio = false; this.responding = true; this.interrupted = false;
         this.onText("\n"); this.state("Responding"); break;
@@ -320,12 +321,16 @@ export class NativeConversation {
       case "response.output_text.delta": case "response.text.delta":
         this.onText(String(event.delta ?? "").slice(0, 2000)); break;
       case "response.function_call_arguments.done": this.tools?.add(event); break;
-      case "response.done":
+      case "response.done": {
+        const epoch = this.epoch, generation = this.responseGeneration;
+        const resumable = !this.interrupted && event.response?.status !== "cancelled" && event.response?.status !== "failed";
         this.responding = false;
         this.observations?.done(event.response?.status, event.response?.usage);
-        this.tools?.done(!this.interrupted && event.response?.status !== "cancelled" && event.response?.status !== "failed")
+        this.tools?.done(() => resumable && this.active && this.epoch === epoch &&
+          this.responseGeneration === generation && !this.interrupted)
           .catch(() => this.stop("Tool result could not be delivered", true));
         this.state(this.muted ? "Microphone muted" : "Listening"); break;
+      }
       case "error": throw new Error("Voice provider rejected the session or event; check server configuration");
     }
   }

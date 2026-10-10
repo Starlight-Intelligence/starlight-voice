@@ -59,6 +59,30 @@ test("tool errors are explicit; cancelled turn does not start another response",
   assert.ok(!sent[0].item.output.includes("private detail"));
 });
 
+for (const change of ["interruption", "replacement response", "replacement session", "stopped session", "unchanged turn"]) {
+  test(`pending tool continuation respects ${change}`, async () => {
+    const pending = deferred(), sent = [];
+    const conversation = new NativeConversation();
+    conversation.active = true;
+    conversation.tools = new ToolBatch(() => pending.promise, (event) => sent.push(event));
+    conversation.event({ type: "response.created", response: { id: "original" } });
+    conversation.event({ type: "response.function_call_arguments.done", response_id: "original", call_id: "call", name: "node_health", arguments: "{}" });
+    conversation.event({ type: "response.done", response: { id: "original", status: "completed" } });
+    await flush();
+    assert.equal(sent.length, 0);
+    if (change === "interruption") conversation.event({ type: "input_audio_buffer.speech_started" });
+    if (change === "replacement response") {
+      conversation.event({ type: "input_audio_buffer.speech_started" });
+      conversation.event({ type: "response.created", response: { id: "replacement" } });
+    }
+    if (change === "replacement session") conversation.epoch++;
+    if (change === "stopped session") conversation.active = false;
+    pending.resolve({ status: "ok" });
+    await flush();
+    assert.equal(sent.filter((event) => event.type === "response.create").length, change === "unchanged turn" ? 1 : 0);
+  });
+}
+
 function fakeContext() {
   const sources = [];
   return { currentTime: 0, destination: {}, sources,
