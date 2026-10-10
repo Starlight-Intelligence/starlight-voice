@@ -18,7 +18,7 @@ def create_dialogue_tts(*, api_key: str, voice_id: str, model: str,
     # Validate before importing the optional graph or opening any connection.
     client = dialogue or ElevenDialogue(api_key=api_key, voice_id=voice_id,
                                        model=model, timeout_s=timeout_s)
-    from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame
+    from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame, TTSStoppedFrame
     from pipecat.services.settings import TTSSettings
     from pipecat.services.tts_service import TextAggregationMode, TTSService
 
@@ -35,6 +35,14 @@ def create_dialogue_tts(*, api_key: str, voice_id: str, model: str,
 
         def can_generate_metrics(self):
             return True
+
+        async def flush_audio(self, context_id: str | None = None):
+            # Synthesis is synchronous with run_tts: no receive loop remains at
+            # turn completion. Close even when no audio was yielded; older base
+            # services otherwise leave failed contexts until their idle timeout.
+            if context_id and self.audio_context_available(context_id):
+                await self.append_to_audio_context(context_id, TTSStoppedFrame(context_id=context_id))
+                await self.remove_audio_context(context_id)
 
         async def run_tts(self, text: str, context_id: str):
             async def sentence():

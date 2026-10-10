@@ -25,6 +25,11 @@ Unknown models and engines fail before provider calls. The binding uses Pipecat
 1.3 APIs; the voice extra now requires at least that version.
 [Pipecat 1.3 TTS source](https://github.com/pipecat-ai/pipecat/blob/v1.3.0/src/pipecat/services/tts_service.py)
 
+The current ElevenLabs guide explicitly includes v4 Turbo, while the WebSocket API
+reference still describes v3-only model IDs. Keep v4 as a selectable candidate,
+retain the Flash default, and verify account/model acceptance before playback.
+[WebSocket reference](https://elevenlabs.io/docs/api-reference/text-to-dialogue/ttd-websocket)
+
 The component default now pairs `openai/gpt-oss-120b` with the existing Cerebras
 provider pin, replacing an incompatible GPT-5/Cerebras selection. This is a
 configured route, not a measured performance result. [Provider listing](https://openrouter.ai/provider/cerebras)
@@ -44,7 +49,7 @@ credentials, tool execution or conversational latency.
 
 ## Verification
 
-154 offline Python tests and 18 Node tests pass; five optional Pipecat tests skip.
+155 offline Python tests and 18 Node tests pass; five optional Pipecat tests skip.
 Ruff passes. The local HTTP server suite remains excluded under the no-server-start
 constraint. Hosted CI can exercise that suite on its own runners. Fake transports
 establish protocol and cleanup behavior, not live audio quality or latency.

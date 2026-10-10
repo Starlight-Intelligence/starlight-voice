@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,10 @@ def frames(monkeypatch):
             self.error = error
             self.fatal = fatal
 
+    class Stop:
+        def __init__(self, *, context_id):
+            self.context_id = context_id
+
     class Service:
         def __init__(self, **kwargs):
             self.options = kwargs
@@ -38,11 +43,30 @@ def frames(monkeypatch):
             self.interrupted = context_id
 
     monkeypatch.setitem(sys.modules, "pipecat.frames.frames",
-                        SimpleNamespace(ErrorFrame=Error, TTSAudioRawFrame=Audio))
+                        SimpleNamespace(ErrorFrame=Error, TTSAudioRawFrame=Audio, TTSStoppedFrame=Stop))
     monkeypatch.setitem(sys.modules, "pipecat.services.settings", SimpleNamespace(TTSSettings=lambda **kw: kw))
     monkeypatch.setitem(sys.modules, "pipecat.services.tts_service",
                         SimpleNamespace(TTSService=Service, TextAggregationMode=SimpleNamespace(SENTENCE="sentence")))
     return SimpleNamespace(Audio=Audio, Error=Error)
+
+
+def test_flush_closes_an_empty_context_instead_of_waiting_for_idle_timeout(frames):
+    async def run():
+        service = build(object())
+        events = []
+        service.audio_context_available = lambda context: context == "failed-turn"
+
+        async def append(context, frame):
+            events.append(("stop", context, frame.context_id))
+
+        async def remove(context):
+            events.append(("close", context))
+
+        service.append_to_audio_context, service.remove_audio_context = append, remove
+        await service.flush_audio("failed-turn")
+        await service.flush_audio("absent")
+        assert events == [("stop", "failed-turn", "failed-turn"), ("close", "failed-turn")]
+    asyncio.run(run())
 
 
 def build(dialogue):
@@ -184,7 +208,9 @@ def test_actual_pipecat_pipeline_orders_audio_and_ends_on_failure_without_device
             errors.append(frame)
 
         await task.queue_frames([TTSSpeakFrame("Hello."), EndFrame()])
+        started = time.monotonic()
         await asyncio.wait_for(PipelineRunner(handle_sigint=False).run(task), timeout=10)
+        assert time.monotonic() - started < 3, "Synthesis shutdown must not depend on the audio context idle timer"
         relevant = [frame for frame in sink.frames
                     if isinstance(frame, (TTSStartedFrame, TTSAudioRawFrame, TTSStoppedFrame))]
         if mode == "success":
