@@ -2,6 +2,10 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+// This page owns mounting. The reusable transport module has no import side effects.
+import("./native-conversation.mjs").then(({ mountNativeConversation }) => mountNativeConversation()).catch(() => {
+  $("voiceStatus").textContent = "Native voice controls unavailable";
+});
 
 function renderLoop(s = {}) {
   const rows = [

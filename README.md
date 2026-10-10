@@ -115,6 +115,13 @@ The native path has no Pipecat or local model dependency. Approved memory recall
 requires the separately configured signed projection gateway. Dispatch/approval
 remain blocked, and real voice quality, interruption, latency and RAM need validation.
 
+The native client can be imported without mounting controls. An embedding page can
+set a same-origin `brokerPrefix` and `workletPath`, then explicitly mount and dispose
+its controls. Disposal stops owned media and removes page listeners, including when
+capability discovery is still pending. See the embedding section in
+`docs/ARCHITECTURE-2026-10-10.md`. Command Center's page and server route are still
+separate integration work.
+
 To deploy just the landing site statically, publish the `site/` directory as-is.
 
 ## Configuration

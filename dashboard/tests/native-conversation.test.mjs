@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { NativeConversation, PcmPlayback, ToolBatch, TurnObservations, decodePcm16, pcm16Base64 } from "../native-conversation.mjs";
+import { NativeConversation, PcmPlayback, ToolBatch, TurnObservations, decodePcm16, mountNativeConversation, pcm16Base64 } from "../native-conversation.mjs";
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
@@ -141,7 +141,7 @@ test("Grok connects with an ephemeral subprotocol and gates mic until session.up
   const sent = [], requests = [], contexts = [], sockets = [], worklets = [];
   const track = { enabled: true, stop() {} }, stream = { getTracks: () => [track], getAudioTracks: () => [track] };
   class Context {
-    constructor() { Object.assign(this, fakeContext()); this.sampleRate = 48000; contexts.push(this); this.audioWorklet = { addModule: async () => {} }; }
+    constructor() { Object.assign(this, fakeContext()); this.sampleRate = 48000; contexts.push(this); this.audioWorklet = { addModule: async (path) => { this.workletPath = path; } }; }
     async resume() {}
     async close() { this.closed = true; }
     createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
@@ -157,7 +157,7 @@ test("Grok connects with an ephemeral subprotocol and gates mic until session.up
     connect() {} disconnect() {}
   }
   const conversation = new NativeConversation({ media: { getUserMedia: async () => stream },
-    AudioContextClass: Context, WebSocketClass: Socket, WorkletClass: Worklet,
+    AudioContextClass: Context, WebSocketClass: Socket, WorkletClass: Worklet, workletPath: "/native-voice/pcm-capture.js",
     fetchFn: async (path, options) => {
       requests.push({ path, options });
       return { ok: true, json: async () => path === "/voice/session" ? {
@@ -167,6 +167,7 @@ test("Grok connects with an ephemeral subprotocol and gates mic until session.up
     },
   });
   await conversation.start("grok", "ara");
+  assert.equal(contexts[0].workletPath, "/native-voice/pcm-capture.js");
   assert.equal(track.enabled, false); assert.equal(conversation.ready, false);
   assert.deepEqual(sockets[0].protocols, ["xai-client-secret.ephemeral-token"]);
   assert.ok(!("client_secret" in conversation.session));
@@ -296,4 +297,98 @@ test("late events from an older response cannot play or finish the current turn"
   conversation.event({ type: "response.done", response: { id: "current", status: "completed" } });
   assert.equal(records.length, 1); assert.equal(records[0].sequence, 1);
   assert.ok(!JSON.stringify(records[0]).includes("current"));
+});
+
+test("broker routing stays same-origin and forwards capabilities only to fixed actions", async () => {
+  const requests = [], conversation = new NativeConversation({ brokerPrefix: "/api/voice/native", fetchFn: async (path, options) => {
+    requests.push({ path, options }); return { ok: true, json: async () => ({ ok: true }) };
+  } });
+  for (const action of ["session", "tool", "observation", "stop"]) {
+    await conversation.post(`/voice/${action}`, {}, { capability: "local-capability" });
+  }
+  assert.deepEqual(requests.map((request) => request.path), ["session", "tool", "observation", "stop"].map((action) => `/api/voice/native/${action}`));
+  assert.ok(requests.every((request) => request.options.credentials === "same-origin" && request.options.redirect === "error" && request.options.headers["X-Voice-Capability"] === "local-capability"));
+  await assert.rejects(conversation.post("https://example.test/voice/tool", {}), /Unknown/);
+  await assert.rejects(conversation.post("/voice/arbitrary", {}), /Unknown/);
+  assert.equal(requests.length, 4);
+  for (const path of ["https://example.test", "//example.test", "/voice/../elsewhere", "/voice%2f", "/voice?q=1", "/voice#x", "/voice\\elsewhere"]) {
+    assert.throws(() => new NativeConversation({ brokerPrefix: path }), /same-origin/);
+  }
+  for (const path of ["https://example.test/capture.js", "//example.test/capture.js", "/../capture.js", "/capture.js?q=1", "/capture%2ejs", "/capture.mjs"]) {
+    assert.throws(() => new NativeConversation({ workletPath: path }), /same-origin/);
+  }
+});
+
+function fakeVoiceDocument() {
+  class Target {
+    constructor() { this.events = new Map(); this.disabled = false; this.textContent = ""; this.children = []; this.value = ""; this.classList = { toggle() {} }; }
+    addEventListener(name, handler) { const handlers = this.events.get(name) || new Set(); handlers.add(handler); this.events.set(name, handlers); }
+    removeEventListener(name, handler) { this.events.get(name)?.delete(handler); }
+    emit(name, event = {}) { for (const handler of [...(this.events.get(name) || [])]) handler(event); }
+    append(child) { this.children.push(child); }
+    replaceChildren() { this.children = []; }
+    setAttribute() {}
+    listenerCount() { return [...this.events.values()].reduce((total, handlers) => total + handlers.size, 0); }
+  }
+  const doc = new Target(), lifecycle = new Target();
+  const ids = ["voiceStart", "voiceStop", "voiceMute", "voiceProvider", "voiceVoice", "voiceStatus", "voiceCaption"];
+  const elements = Object.fromEntries(ids.map((id) => [id, new Target()]));
+  doc.getElementById = (id) => elements[id]; doc.createElement = () => new Target();
+  return { doc, lifecycle, elements, count: () => [doc, lifecycle, ...Object.values(elements)].reduce((total, target) => total + target.listenerCount(), 0) };
+}
+
+test("explicit mounting supports disposal and remount without stale page listeners or captions", async () => {
+  const page = fakeVoiceDocument(), requests = [];
+  const options = { lifecycleTarget: page.lifecycle, brokerPrefix: "/api/voice/native", fetchFn: async (path, settings) => {
+    requests.push({ path, settings }); return { ok: true, json: async () => ({ providers: [{ id: "grok", configured: true, voices: ["ara", "orion"] }] }) };
+  } };
+  const first = mountNativeConversation(page.doc, options);
+  await first.mountReady;
+  assert.equal(requests[0].path, "/api/voice/native/capabilities");
+  assert.equal(requests[0].settings.credentials, "same-origin");
+  assert.equal(requests[0].settings.redirect, "error");
+  assert.equal(page.elements.voiceStart.disabled, false);
+  assert.equal(page.elements.voiceProvider.children.length, 1);
+  assert.equal(page.elements.voiceVoice.children.length, 2);
+  assert.equal(page.count(), 7);
+  let released = 0;
+  first.active = true; first.stream = { getTracks: () => [{ stop: () => released++ }] };
+  first.onText("private caption");
+  await first.dispose(); await first.dispose();
+  assert.equal(released, 1); assert.equal(page.count(), 0);
+  assert.equal(page.elements.voiceCaption.textContent, "");
+  first.onText("late caption"); assert.equal(page.elements.voiceCaption.textContent, "");
+  const second = mountNativeConversation(page.doc, options); await second.mountReady;
+  assert.equal(page.elements.voiceProvider.children.length, 1); assert.equal(page.count(), 7);
+  let starts = 0; second.start = async () => starts++;
+  page.elements.voiceStart.emit("click"); assert.equal(starts, 1);
+  await second.dispose(); assert.equal(page.count(), 0);
+});
+
+test("disposal aborts pending discovery and a late reply cannot re-enable an unmounted page", async () => {
+  const page = fakeVoiceDocument(), discovery = deferred(); let signal;
+  const conversation = mountNativeConversation(page.doc, { lifecycleTarget: page.lifecycle, fetchFn: (_, options) => { signal = options.signal; return discovery.promise; } });
+  await conversation.dispose(); assert.equal(signal.aborted, true); assert.equal(page.count(), 0);
+  discovery.resolve({ ok: true, json: async () => ({ providers: [{ id: "grok", configured: true, voices: ["ara"] }] }) });
+  await conversation.mountReady;
+  assert.equal(page.elements.voiceStart.disabled, true); assert.equal(page.elements.voiceProvider.children.length, 0);
+});
+
+test("importing in a browser environment never mounts the page automatically", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { configurable: true, get() { assert.fail("Import must not inspect document"); } });
+  try { await import("../native-conversation.mjs?import-with-browser"); }
+  finally { if (descriptor) Object.defineProperty(globalThis, "document", descriptor); else delete globalThis.document; }
+});
+
+test("an unconfigured provider stays disabled across pagehide without requesting the microphone", async () => {
+  const page = fakeVoiceDocument(); let captures = 0;
+  const conversation = mountNativeConversation(page.doc, { lifecycleTarget: page.lifecycle,
+    media: { getUserMedia: () => captures++ },
+    fetchFn: async () => ({ ok: true, json: async () => ({ providers: [{ id: "grok", configured: false, voices: ["ara"] }] }) }),
+  });
+  await conversation.mountReady; page.lifecycle.emit("pagehide");
+  assert.equal(captures, 0); assert.equal(page.elements.voiceStart.disabled, true);
+  assert.equal(page.elements.voiceProvider.disabled, true);
+  await conversation.dispose();
 });

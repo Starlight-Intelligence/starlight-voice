@@ -120,15 +120,28 @@ export class PcmPlayback {
 export class NativeConversation {
   constructor({ onState = () => {}, onText = () => {}, fetchFn = globalThis.fetch, media = globalThis.navigator?.mediaDevices,
     AudioContextClass = globalThis.AudioContext, WebSocketClass = globalThis.WebSocket, PeerClass = globalThis.RTCPeerConnection,
-    WorkletClass = globalThis.AudioWorkletNode, audioFactory = () => new Audio() } = {}) {
-    Object.assign(this, { onState, onText, fetchFn, media, AudioContextClass, WebSocketClass, PeerClass, WorkletClass, audioFactory });
+    WorkletClass = globalThis.AudioWorkletNode, audioFactory = () => new Audio(), brokerPrefix = "/voice",
+    workletPath = "/dashboard/pcm-capture.js" } = {}) {
+    // Capabilities and worklets must never be sent to configurable remote origins.
+    if (typeof brokerPrefix !== "string" || brokerPrefix.length > 200 || !/^(?:\/[A-Za-z0-9_-]+)+$/.test(brokerPrefix)) {
+      throw new Error("Voice broker prefix must be a same-origin path");
+    }
+    if (typeof workletPath !== "string" || workletPath.length > 200 || !/^(?:\/[A-Za-z0-9_-]+)+\.js$/.test(workletPath)) {
+      throw new Error("Voice worklet must be a same-origin JavaScript path");
+    }
+    Object.assign(this, { onState, onText, fetchFn, media, AudioContextClass, WebSocketClass, PeerClass, WorkletClass, audioFactory, brokerPrefix, workletPath });
     this.epoch = 0; this.active = false; this.ready = false; this.muted = false;
   }
   state(label, error = false) { this.onState({ label, error, active: this.active, ready: this.ready, muted: this.muted }); }
+  endpoint(action) {
+    if (!["session", "tool", "observation", "stop", "capabilities"].includes(action)) throw new Error("Unknown voice broker action");
+    return `${this.brokerPrefix}/${action}`;
+  }
   async post(path, body, { signal = this.abort?.signal, keepalive = false, capability = this.session?.capability } = {}) {
-    const response = await this.fetchFn(path, {
+    if (!path.startsWith("/voice/")) throw new Error("Unknown voice broker action");
+    const response = await this.fetchFn(this.endpoint(path.slice(7)), {
       method: "POST", headers: { "Content-Type": "application/json", ...(capability ? { "X-Voice-Capability": capability } : {}) },
-      body: JSON.stringify(body), signal, keepalive, cache: "no-store", credentials: "same-origin",
+      body: JSON.stringify(body), signal, keepalive, cache: "no-store", credentials: "same-origin", redirect: "error",
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Local voice broker unavailable");
@@ -194,7 +207,7 @@ export class NativeConversation {
   async connectGrok(epoch) {
     const context = this.context;
     if (context.sampleRate !== 48000) throw new Error("This browser did not provide the required 48 kHz audio context");
-    await context.audioWorklet.addModule("/dashboard/pcm-capture.js");
+    await context.audioWorklet.addModule(this.workletPath);
     if (epoch !== this.epoch) return;
     this.playback = new PcmPlayback(context);
     this.source = context.createMediaStreamSource(this.stream);
@@ -344,29 +357,50 @@ export class NativeConversation {
   }
 }
 
-export async function mountNativeConversation(doc = document) {
+// Mount explicitly. Importing this module never touches the page or microphone.
+// The returned conversation can be disposed immediately, even during discovery.
+export function mountNativeConversation(doc = document, options = {}) {
   const start = doc.getElementById("voiceStart"), stop = doc.getElementById("voiceStop"), mute = doc.getElementById("voiceMute");
   const provider = doc.getElementById("voiceProvider"), voice = doc.getElementById("voiceVoice");
   const status = doc.getElementById("voiceStatus"), caption = doc.getElementById("voiceCaption");
-  const conversation = new NativeConversation({
+  if (![start, stop, mute, provider, voice, status, caption].every(Boolean)) throw new Error("Native voice controls are missing");
+  let disposed = false;
+  const discovery = new AbortController(), listeners = [];
+  const bind = (target, name, handler) => {
+    target.addEventListener(name, handler); listeners.push(() => target.removeEventListener(name, handler));
+  };
+  const conversation = new NativeConversation({ ...options,
     onState: (state) => {
+      if (disposed) return;
       status.textContent = state.label; status.classList.toggle("err", state.error);
       start.disabled = state.active; stop.disabled = !state.active; mute.disabled = !state.ready;
       provider.disabled = voice.disabled = state.active;
       mute.textContent = state.muted ? "Unmute" : "Mute"; mute.setAttribute("aria-pressed", String(state.muted));
     },
-    onText: (text) => { caption.textContent = (caption.textContent + text).slice(-2000); },
+    onText: (text) => { if (!disposed) caption.textContent = (caption.textContent + text).slice(-2000); },
   });
-  start.addEventListener("click", () => { caption.textContent = ""; conversation.start(provider.value, voice.value); });
-  stop.addEventListener("click", () => conversation.stop());
-  mute.addEventListener("click", () => conversation.mute());
-  doc.addEventListener("keydown", (event) => { if (event.key === "Escape" && conversation.active) conversation.stop(); });
-  doc.addEventListener("visibilitychange", () => { if (doc.hidden && conversation.active) conversation.stop("Stopped when the tab became hidden"); });
-  globalThis.addEventListener("pagehide", () => conversation.stop());
-  try {
-    const response = await fetch("/voice/capabilities", { cache: "no-store" });
+  start.disabled = stop.disabled = mute.disabled = provider.disabled = voice.disabled = true;
+  provider.replaceChildren(); voice.replaceChildren();
+  bind(start, "click", () => { caption.textContent = ""; conversation.start(provider.value, voice.value); });
+  bind(stop, "click", () => conversation.stop());
+  bind(mute, "click", () => conversation.mute());
+  bind(doc, "keydown", (event) => { if (event.key === "Escape" && conversation.active) conversation.stop(); });
+  bind(doc, "visibilitychange", () => { if (doc.hidden && conversation.active) conversation.stop("Stopped when the tab became hidden"); });
+  bind(options.lifecycleTarget || globalThis, "pagehide", () => { if (conversation.active) conversation.stop(); });
+  conversation.dispose = async () => {
+    if (disposed) return;
+    disposed = true; discovery.abort(); listeners.splice(0).forEach((remove) => remove());
+    start.disabled = stop.disabled = mute.disabled = provider.disabled = voice.disabled = true;
+    caption.textContent = "";
+    await conversation.stop();
+  };
+  conversation.mountReady = (async () => { try {
+    const response = await conversation.fetchFn(conversation.endpoint("capabilities"), {
+      cache: "no-store", credentials: "same-origin", redirect: "error", signal: AbortSignal.any([discovery.signal, AbortSignal.timeout(5000)]),
+    });
     if (!response.ok) throw new Error("Voice broker unavailable");
     const caps = await response.json();
+    if (disposed) return;
     let choices = [];
     for (const spec of caps.providers) {
       const option = doc.createElement("option"); option.value = spec.id;
@@ -381,11 +415,9 @@ export async function mountNativeConversation(doc = document) {
         option.textContent = name[0].toUpperCase() + name.slice(1); voice.append(option);
       }
     };
-    provider.addEventListener("change", chooseVoice);
-    if (choices.length) { provider.value = choices[0].id; chooseVoice(); start.disabled = false; status.textContent = "Ready · microphone off"; }
+    bind(provider, "change", chooseVoice);
+    if (choices.length) { provider.value = choices[0].id; chooseVoice(); start.disabled = provider.disabled = voice.disabled = false; status.textContent = "Ready · microphone off"; }
     else { status.textContent = "Configure XAI_API_KEY or OPENAI_API_KEY on the server to enable native voice"; }
-  } catch { status.textContent = "Native voice broker unavailable"; }
+  } catch { if (!disposed) status.textContent = "Native voice broker unavailable"; } })();
   return conversation;
 }
-
-if (typeof document !== "undefined") mountNativeConversation();

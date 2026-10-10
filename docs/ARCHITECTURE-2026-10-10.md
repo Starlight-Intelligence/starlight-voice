@@ -135,6 +135,23 @@ credentials are excluded. The recent-run read tool returns sanitized observation
 summaries with acceptance unverified. These records support later validation;
 they do not satisfy the conversation quality or latency gate by themselves.
 
+## Embedding the native client
+
+`dashboard/native-conversation.mjs` exports the transport without automatically
+mounting controls or requesting the microphone. The existing cockpit mounts it
+explicitly. An embedding page may set `brokerPrefix` and `workletPath` to local,
+same-origin paths. External origins, query strings, encoded paths, traversal and
+unknown broker actions are refused. This routing option does not add a gateway,
+task queue or authentication authority.
+
+`mountNativeConversation(document, options)` returns the conversation immediately,
+with `mountReady` for capability discovery and `dispose()` for page unmount.
+Disposal aborts discovery, removes its control and lifecycle listeners, clears
+captions and stops owned audio and session authority. It also handles discovery
+that returns after disposal. React or another host must call disposal in its
+unmount cleanup. Command Center integration still needs its actual server route
+and page; this reusable client alone does not establish that connection.
+
 ## Remaining work
 
 Select and listen to an account voice through the ElevenLabs component pipeline;
