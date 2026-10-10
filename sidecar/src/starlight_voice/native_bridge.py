@@ -284,10 +284,11 @@ class NativeBridge:
             except OSError:
                 raise ProjectionUnavailable("Shared tool plane is unconfigured") from None
         reader = LocalMcpReader("http://127.0.0.1:7317/mcp", token)
-        tool = "starlight_bridge__get_active_sessions" if name == "portfolio_status" else "starlight_bridge__get_system_telemetry"
-        result = await reader.call(tool, {})
         if name == "node_health":
-            return {"status": "ok", "shared_tool_plane": "responding", "audio_runtime_verified": False}
+            await reader.ping(expected_server="starlight-shared-tool-plane")
+            return {"status": "ok", "shared_tool_plane": "responding", "scope": "mcp-ping-only",
+                    "hardware_health_verified": False, "audio_runtime_verified": False}
+        result = await reader.call("starlight_bridge__get_active_sessions", {})
         data = json.loads(tool_text(result))
         sessions = data if isinstance(data, list) else data.get("sessions") if isinstance(data, dict) else None
         return {"status": "ok", "active_session_count": len(sessions) if isinstance(sessions, list) else None,

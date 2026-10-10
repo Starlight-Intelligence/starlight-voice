@@ -13,6 +13,7 @@ import json
 from urllib.parse import urlsplit
 
 MAX_RESPONSE = 64 * 1024
+PROTOCOL_VERSIONS = {"2025-03-26", "2025-06-18", "2025-11-25"}
 
 
 def local_mcp_endpoint(url: str) -> bool:
@@ -39,9 +40,20 @@ class LocalMcpReader:
         self.transport, self.deadline_s = transport, deadline_s
 
     async def call(self, name: str, arguments: dict, *, projection: bool = False) -> dict:
+        return await self._exchange(name, arguments, projection=projection)
+
+    async def ping(self, *, expected_server: str) -> dict:
+        if not isinstance(expected_server, str) or not expected_server:
+            raise ProjectionUnavailable("MCP ping requires a server identity")
+        return await self._exchange(None, None, expected_server=expected_server)
+
+    async def _exchange(self, name: str | None, arguments: dict | None, *, projection: bool = False,
+                        expected_server: str | None = None) -> dict:
         import httpx
 
         session_id = None
+        in_flight = None
+        cancel_request = None
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/json, text/event-stream", "Content-Type": "application/json",
@@ -51,20 +63,24 @@ class LocalMcpReader:
             transport=self.transport, trust_env=False, follow_redirects=False, timeout=self.deadline_s,
         ) as client:
             async def request(method: str, params: dict | None, request_id: int | None):
-                nonlocal session_id
+                nonlocal session_id, in_flight
                 body = {"jsonrpc": "2.0", "method": method}
                 if params is not None:
                     body["params"] = params
                 if request_id is not None:
                     body["id"] = request_id
+                    in_flight = request_id if method != "initialize" else None
                 async with client.stream("POST", self.endpoint, headers=headers, json=body) as response:
                     response.raise_for_status()
-                    if response.headers.get("mcp-session-id"):
-                        session_id = response.headers["mcp-session-id"]
-                        if len(session_id) > 128 or any(ord(c) < 32 for c in session_id):
+                    returned_session = response.headers.get("mcp-session-id")
+                    if returned_session is not None:
+                        if not returned_session or len(returned_session) > 128 or any(not 33 <= ord(c) <= 126 for c in returned_session):
                             raise ProjectionUnavailable("Invalid MCP session")
-                        headers["mcp-session-id"] = session_id
-                        headers["MCP-Protocol-Version"] = "2025-03-26"
+                        if method == "initialize":
+                            session_id = returned_session
+                            headers["mcp-session-id"] = session_id
+                        elif returned_session != session_id:
+                            raise ProjectionUnavailable("MCP session changed")
                     if request_id is None:
                         return {}
                     chunks = bytearray()
@@ -87,20 +103,28 @@ class LocalMcpReader:
                                 if data:
                                     message = json.loads(data)
                                     if message.get("id") == request_id:
-                                        return checked_result(message)
+                                        result = checked_result(message, request_id)
+                                        in_flight = None
+                                        return result
                     if is_sse:
                         raise ProjectionUnavailable("MCP response is incomplete")
                     message = json.loads(chunks)
-                    if message.get("id") != request_id:
-                        raise ProjectionUnavailable("MCP response ID mismatch")
-                    return checked_result(message)
+                    result = checked_result(message, request_id)
+                    in_flight = None
+                    return result
 
             try:
                 async with asyncio.timeout(self.deadline_s):
                     init = await request("initialize", {
-                        "protocolVersion": "2025-03-26", "capabilities": {},
+                        "protocolVersion": "2025-11-25", "capabilities": {},
                         "clientInfo": {"name": "starlight-voice", "version": "0.1.0"},
                     }, 1)
+                    protocol = init.get("protocolVersion")
+                    if protocol not in PROTOCOL_VERSIONS:
+                        raise ProjectionUnavailable("MCP protocol is unsupported")
+                    headers["MCP-Protocol-Version"] = protocol
+                    if expected_server and init.get("serverInfo", {}).get("name") != expected_server:
+                        raise ProjectionUnavailable("MCP server identity differs")
                     if projection and init.get("serverInfo", {}).get("name") != "starlight-memory-cloud":
                         raise ProjectionUnavailable("Recall requires the signed projection gateway")
                     await request("notifications/initialized", None, None)
@@ -113,21 +137,40 @@ class LocalMcpReader:
                             raise ProjectionUnavailable("Memory projection policy is not approved")
                         if not isinstance(status.get("projection_id"), str) or len(status["projection_id"]) != 64:
                             raise ProjectionUnavailable("Memory projection watermark is missing")
+                    if name is None:
+                        result = await request("ping", None, 3)
+                        if result != {}:
+                            raise ProjectionUnavailable("Invalid MCP ping result")
+                        return result
                     return await request("tools/call", {"name": name, "arguments": arguments}, 3)
             except asyncio.CancelledError:
+                cancel_request = in_flight
                 raise
+            except (TimeoutError, httpx.TimeoutException):
+                cancel_request = in_flight
+                raise ProjectionUnavailable("MCP read unavailable; no private fallback was attempted") from None
             except Exception:
                 raise ProjectionUnavailable("MCP read unavailable; no private fallback was attempted") from None
             finally:
-                if session_id:
+                if session_id or cancel_request is not None:
                     try:
                         async with asyncio.timeout(0.15):
-                            await client.delete(self.endpoint, headers=headers)
-                    except (Exception, asyncio.CancelledError):
+                            if cancel_request is not None:
+                                try:
+                                    await request("notifications/cancelled", {
+                                        "requestId": cancel_request, "reason": "Voice read ended",
+                                    }, None)
+                                except Exception:
+                                    pass
+                            if session_id:
+                                await client.delete(self.endpoint, headers=headers)
+                    except Exception:
                         pass
 
 
-def checked_result(message: dict) -> dict:
+def checked_result(message: dict, request_id: int) -> dict:
+    if not isinstance(message, dict) or message.get("jsonrpc") != "2.0" or type(message.get("id")) is not int or message["id"] != request_id:
+        raise ProjectionUnavailable("Invalid MCP response")
     if "error" in message or not isinstance(message.get("result"), dict):
         raise ProjectionUnavailable("MCP read failed")
     result = message["result"]

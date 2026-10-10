@@ -57,6 +57,29 @@ def test_authority_and_blocked_writes_are_honest(bridge):
     assert result == {"status": "blocked", "reason": "Managed authenticated intake is not connected", "queued": False, "approved": False}
     assert run(bridge.tool(call(session), session["capability"])) == result
     assert bridge.session.remaining_calls == 19
+
+
+def test_node_health_uses_protocol_ping_and_never_scans_telemetry(bridge, monkeypatch):
+    monkeypatch.setenv("STARLIGHT_TOOL_PLANE_TOKEN", "server-only-secret")
+    seen = []
+
+    class Reader:
+        def __init__(self, endpoint, token):
+            assert endpoint == "http://127.0.0.1:7317/mcp" and token == "server-only-secret"
+
+        async def ping(self, *, expected_server):
+            seen.append(expected_server)
+            return {}
+
+        async def call(self, *args, **kwargs):
+            pytest.fail("A reachability probe must not invoke telemetry or any tool")
+
+    monkeypatch.setattr("starlight_voice.native_bridge.LocalMcpReader", Reader)
+    session = start(bridge)
+    result = run(bridge.tool(call(session, name="node_health", arguments={}), session["capability"]))
+    assert result == {"status": "ok", "shared_tool_plane": "responding", "scope": "mcp-ping-only", "hardware_health_verified": False, "audio_runtime_verified": False}
+    assert seen == ["starlight-shared-tool-plane"]
+    assert "server-only-secret" not in json.dumps(result)
     with pytest.raises(BridgeError):
         run(bridge.tool(call(session, name="vault_read"), session["capability"]))
     with pytest.raises(BridgeError):

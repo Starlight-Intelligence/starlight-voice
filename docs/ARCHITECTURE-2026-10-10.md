@@ -91,6 +91,13 @@ Eight narrow function names follow the existing Voice Edge proposal: portfolio
 counts, local run statuses, shared-plane response health, approved memory/project
 summaries, unsaved mission drafts, dispatch and approval. Shared-plane reads use its existing authenticated
 HTTP MCP endpoint; no raw task text, paths or machine bearer reaches the model.
+`node_health` now initializes the advertised `starlight-shared-tool-plane`, then
+sends a protocol `ping`. It calls no telemetry or portfolio tool and reports
+`scope: mcp-ping-only`, with hardware and audio health explicitly unverified.
+One read through the actual broker completed in 362 ms against the already-running
+service, including its own successful session DELETE. This is one reachability
+observation; audible latency and fleet health remain unmeasured. Portfolio counts
+still depend on the separately bounded active-session tool and may be unavailable.
 Dispatch and approval currently return `blocked`, `queued: false`, `approved: false`.
 They must connect to the existing durable managed intake before claiming otherwise.
 This browser broker does not run coding CLIs or install another task queue.
@@ -116,6 +123,17 @@ the Voice client trusts this explicitly configured local service. Approved summa
 are delivered as function output with no instruction authority. Raw audio, transcripts
 and tool arguments are not persisted by this path; provider retention remains governed
 by the chosen account and provider terms.
+
+Both paths request MCP 2025-11-25 and accept the negotiated 2025-03-26,
+2025-06-18 or 2025-11-25 version, sending its header on subsequent requests even
+for stateless servers. Unknown versions stop before initialization notification
+or tool access. Later responses cannot replace the session assigned at initialize.
+Timeout or caller cancellation attempts cancellation of its own in-flight request
+and DELETE within one additional 150 ms cleanup budget; initialize itself is never
+cancelled by a protocol notification. Cleanup remains best effort and preserves
+caller cancellation. See the official [lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle),
+[HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
+and [ping](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/ping) contracts.
 
 For a later authorized start, install the lightweight `./sidecar[native]` extra,
 configure a server `XAI_API_KEY` or `OPENAI_API_KEY`, and run the existing dashboard
