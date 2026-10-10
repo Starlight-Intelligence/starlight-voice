@@ -87,6 +87,44 @@ def test_projection_never_falls_back_to_private_vault(bridge, monkeypatch):
     assert "projection" in result["reason"]
 
 
+def test_prepare_mission_is_a_typed_ephemeral_draft_not_a_write(bridge, tmp_path):
+    bridge.observation_path = tmp_path / "observations.jsonl"
+    session = start(bridge)
+    args = {"objective": "Improve the existing voice conversation", "acceptance": "Verify interruption and microphone cleanup"}
+    payload = call(session, name="prepare_mission", arguments=args)
+    with pytest.raises(BridgeError):
+        run(bridge.tool(payload, "wrong"))
+    result = run(bridge.tool(payload, session["capability"]))
+    assert result["schema"] == "voice.mission-draft.v1" and result["status"] == "draft"
+    assert result["queued"] is False and result["approved"] is False
+    assert result["draft"]["objective"] == args["objective"]
+    assert set(result["draft"]) == {"id", "objective", "acceptance"}
+    assert run(bridge.tool(payload, session["capability"])) == result
+    assert list(tmp_path.iterdir()) == []
+    assert bridge.session.remaining_calls == 19
+    bridge.observe({"session_id": session["session_id"], "observation": {
+        "sequence": 1, "status": "completed", "interrupted": False, "token_counts": None,
+        "response_created_ms": None, "first_scheduled_audio_ms": None, "response_done_ms": None,
+    }}, session["capability"])
+    stored = bridge.observation_path.read_text()
+    assert args["objective"] not in stored and args["acceptance"] not in stored
+    assert result["draft"]["id"] not in stored
+    assert json.loads(stored)["session_tool_result_counts"] == {"prepare_mission:draft": 1}
+
+
+@pytest.mark.parametrize("args", [
+    {"objective": "too short", "acceptance": "Verify a useful actual outcome"},
+    {"objective": "a" * 901, "acceptance": "Verify a useful actual outcome"},
+    {"objective": "Improve the existing voice conversation", "acceptance": None},
+    {"objective": "Improve the existing voice conversation", "acceptance": "Verify cleanup\0and recovery"},
+    {"objective": "Improve the existing voice conversation", "acceptance": "Verify cleanup and recovery", "approved": True},
+])
+def test_mission_drafts_reject_unbounded_or_authority_fields(bridge, args):
+    session = start(bridge)
+    with pytest.raises(BridgeError):
+        run(bridge.tool(call(session, name="prepare_mission", arguments=args), session["capability"]))
+
+
 def test_mint_concurrency_and_failed_creation_release_reservation():
     async def scenario():
         entered, release = asyncio.Event(), asyncio.Event()

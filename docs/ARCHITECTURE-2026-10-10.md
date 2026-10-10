@@ -87,13 +87,22 @@ caps/revocation require a provider-side or trusted transport-control integration
 [OpenAI credential limitations](https://developers.openai.com/api/reference/resources/realtime/subresources/client_secrets/methods/create),
 [Grok ephemeral credentials](https://docs.x.ai/developers/model-capabilities/audio/ephemeral-tokens)
 
-Seven narrow function names follow the existing Voice Edge proposal: portfolio
+Eight narrow function names follow the existing Voice Edge proposal: portfolio
 counts, local run statuses, shared-plane response health, approved memory/project
-summaries, dispatch and approval. Shared-plane reads use its existing authenticated
+summaries, unsaved mission drafts, dispatch and approval. Shared-plane reads use its existing authenticated
 HTTP MCP endpoint; no raw task text, paths or machine bearer reaches the model.
 Dispatch and approval currently return `blocked`, `queued: false`, `approved: false`.
 They must connect to the existing durable managed intake before claiming otherwise.
 This browser broker does not run coding CLIs or install another task queue.
+
+`prepare_mission` accepts only a bounded objective and acceptance text (15–900
+characters each). It returns an opaque draft id with `queued: false` and
+`approved: false`; draft contents stay in session memory. The native host may
+display an editable draft, and Command Center lets the person choose product,
+role, source and budgets before explicitly saving through its existing mission
+proposal endpoint. No spoken yes, model output or provider callback saves,
+approves or starts work. Client callbacks reject malformed/authority-bearing
+drafts and results arriving after Stop, disposal or a replacement session.
 
 Native recall uses the existing starlight-memory signed cloud-projection gateway,
 whose exporter and gateway verify the manifest and approved atom bytes. It requires

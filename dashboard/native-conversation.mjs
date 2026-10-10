@@ -118,7 +118,7 @@ export class PcmPlayback {
 }
 
 export class NativeConversation {
-  constructor({ onState = () => {}, onText = () => {}, fetchFn = globalThis.fetch, media = globalThis.navigator?.mediaDevices,
+  constructor({ onState = () => {}, onText = () => {}, onMissionDraft = () => {}, fetchFn = globalThis.fetch, media = globalThis.navigator?.mediaDevices,
     AudioContextClass = globalThis.AudioContext, WebSocketClass = globalThis.WebSocket, PeerClass = globalThis.RTCPeerConnection,
     WorkletClass = globalThis.AudioWorkletNode, audioFactory = () => new Audio(), brokerPrefix = "/voice",
     workletPath = "/dashboard/pcm-capture.js" } = {}) {
@@ -129,7 +129,7 @@ export class NativeConversation {
     if (typeof workletPath !== "string" || workletPath.length > 200 || !/^(?:\/[A-Za-z0-9_-]+)+\.js$/.test(workletPath)) {
       throw new Error("Voice worklet must be a same-origin JavaScript path");
     }
-    Object.assign(this, { onState, onText, fetchFn, media, AudioContextClass, WebSocketClass, PeerClass, WorkletClass, audioFactory, brokerPrefix, workletPath });
+    Object.assign(this, { onState, onText, onMissionDraft, fetchFn, media, AudioContextClass, WebSocketClass, PeerClass, WorkletClass, audioFactory, brokerPrefix, workletPath });
     this.epoch = 0; this.active = false; this.ready = false; this.muted = false;
   }
   state(label, error = false) { this.onState({ label, error, active: this.active, ready: this.ready, muted: this.muted }); }
@@ -146,6 +146,20 @@ export class NativeConversation {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Local voice broker unavailable");
     return result;
+  }
+  async executeTool(callId, name, args, epoch) {
+    if (epoch !== this.epoch || !this.active) return { status: "unavailable", reason: "Voice conversation ended" };
+    const output = await this.post("/voice/tool", { session_id: this.session?.session_id, call_id: callId, name, arguments: args });
+    const draft = output?.draft;
+    // Display only the fixed broker result, never a raw model event or authority claim.
+    if (epoch === this.epoch && this.active && name === "prepare_mission" &&
+      output?.schema === "voice.mission-draft.v1" && output.status === "draft" && output.queued === false && output.approved === false &&
+      draft && Object.keys(draft).sort().join() === "acceptance,id,objective" &&
+      typeof draft.id === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(draft.id) &&
+      [draft.objective, draft.acceptance].every((text) => typeof text === "string" && text.trim().length >= 15 && text.length <= 900 && !text.includes("\0"))) {
+      this.onMissionDraft(Object.freeze({ id: draft.id, objective: draft.objective, acceptance: draft.acceptance }));
+    }
+    return output;
   }
   send(event) {
     if (!this.active || !this.channel || this.channel.readyState !== (this.session?.provider === "grok" ? 1 : "open")) return;
@@ -186,9 +200,8 @@ export class NativeConversation {
         writes.add(request);
         request.finally(() => writes.delete(request));
       });
-      this.tools = new ToolBatch(async (callId, name, args) => this.post("/voice/tool", {
-        session_id: session.session_id, call_id: callId, name, arguments: args,
-      }), (event) => { if (epoch === this.epoch) this.send(event); });
+      this.tools = new ToolBatch((callId, name, args) => this.executeTool(callId, name, args, epoch),
+        (event) => { if (epoch === this.epoch) this.send(event); });
       this.limitTimer = setTimeout(() => this.stop("Session time limit reached"), session.max_session_seconds * 1000);
       this.readyTimer = setTimeout(() => this.stop("Connection timed out; check provider access", true), 15000);
       if (provider === "grok") await this.connectGrok(epoch);
@@ -363,6 +376,7 @@ export function mountNativeConversation(doc = document, options = {}) {
   const start = doc.getElementById("voiceStart"), stop = doc.getElementById("voiceStop"), mute = doc.getElementById("voiceMute");
   const provider = doc.getElementById("voiceProvider"), voice = doc.getElementById("voiceVoice");
   const status = doc.getElementById("voiceStatus"), caption = doc.getElementById("voiceCaption");
+  const mission = doc.getElementById("voiceMissionDraft");
   if (![start, stop, mute, provider, voice, status, caption].every(Boolean)) throw new Error("Native voice controls are missing");
   let disposed = false;
   const discovery = new AbortController(), listeners = [];
@@ -378,6 +392,11 @@ export function mountNativeConversation(doc = document, options = {}) {
       mute.textContent = state.muted ? "Unmute" : "Mute"; mute.setAttribute("aria-pressed", String(state.muted));
     },
     onText: (text) => { if (!disposed) caption.textContent = (caption.textContent + text).slice(-2000); },
+    onMissionDraft: (draft) => {
+      if (disposed) return;
+      if (options.onMissionDraft) options.onMissionDraft(draft);
+      else if (mission) { mission.hidden = false; mission.textContent = `Unsaved mission draft\n${draft.objective}\n\nAcceptance\n${draft.acceptance}\n\nReview product, role, source and budget in Command Center before saving.`; }
+    },
   });
   start.disabled = stop.disabled = mute.disabled = provider.disabled = voice.disabled = true;
   provider.replaceChildren(); voice.replaceChildren();
@@ -392,6 +411,7 @@ export function mountNativeConversation(doc = document, options = {}) {
     disposed = true; discovery.abort(); listeners.splice(0).forEach((remove) => remove());
     start.disabled = stop.disabled = mute.disabled = provider.disabled = voice.disabled = true;
     caption.textContent = "";
+    if (mission) { mission.textContent = ""; mission.hidden = true; }
     await conversation.stop();
   };
   conversation.mountReady = (async () => { try {

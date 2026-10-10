@@ -392,3 +392,42 @@ test("an unconfigured provider stays disabled across pagehide without requesting
   assert.equal(page.elements.voiceProvider.disabled, true);
   await conversation.dispose();
 });
+
+test("only bounded broker drafts reach the host; model output cannot confer authority", async () => {
+  const drafts = [], id = "507e8b48-bb41-48b0-a58b-263349b7fdcb";
+  let output = { schema: "voice.mission-draft.v1", status: "draft", queued: false, approved: false,
+    draft: { id, objective: "Improve the existing voice experience", acceptance: "Verify microphone cleanup and recovery" } };
+  const conversation = new NativeConversation({ onMissionDraft: (draft) => drafts.push(draft),
+    fetchFn: async () => ({ ok: true, json: async () => output }),
+  });
+  conversation.active = true; conversation.session = { session_id: "session", capability: "cap" };
+  await conversation.executeTool("call", "prepare_mission", {}, conversation.epoch);
+  assert.equal(drafts.length, 1); assert.deepEqual(drafts[0], output.draft);
+  for (const bad of [ { ...output, queued: true }, { ...output, approved: true },
+    { ...output, draft: { ...output.draft, command: "run something" } },
+    { ...output, draft: { ...output.draft, objective: "x".repeat(901) } } ]) {
+    output = bad; await conversation.executeTool("call", "prepare_mission", {}, conversation.epoch);
+  }
+  assert.equal(drafts.length, 1);
+});
+
+test("stale draft results cannot enter a stopped or replaced conversation", async () => {
+  const result = deferred(); let received = 0;
+  const conversation = new NativeConversation({ onMissionDraft: () => received++,
+    fetchFn: async () => ({ ok: true, json: () => result.promise }),
+  });
+  conversation.active = true; conversation.session = { session_id: "session", capability: "cap" };
+  const request = conversation.executeTool("call", "prepare_mission", {}, conversation.epoch);
+  conversation.active = false; conversation.epoch++;
+  result.resolve({ schema: "voice.mission-draft.v1", status: "draft", queued: false, approved: false,
+    draft: { id: "507e8b48-bb41-48b0-a58b-263349b7fdcb", objective: "Improve the existing voice experience", acceptance: "Verify microphone cleanup and recovery" } });
+  await request; assert.equal(received, 0);
+});
+
+test("an old tool batch cannot borrow a replacement conversation's session authority", async () => {
+  let calls = 0;
+  const conversation = new NativeConversation({ fetchFn: () => calls++ });
+  conversation.active = true; conversation.epoch = 2;
+  const output = await conversation.executeTool("call", "prepare_mission", {}, 1);
+  assert.equal(output.status, "unavailable"); assert.equal(calls, 0);
+});
