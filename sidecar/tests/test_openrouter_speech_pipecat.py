@@ -56,6 +56,32 @@ def test_interruption_cancels_actual_rest_response_without_orphan_tasks(frames):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("engine", ["openrouter-speech", "eleven-dialogue"])
+def test_old_context_interruption_does_not_cancel_the_next_sentence(frames, engine):
+    async def run():
+        response = AudioStream(stall=True)
+        speech = OpenRouterSpeech(api_key="test", voice_id="george", model="elevenlabs/eleven-v4-turbo",
+                                  transport=httpx.MockTransport(lambda req: httpx.Response(
+                                      200, headers={"content-type": "audio/pcm"}, stream=response)))
+        service = build(speech) if engine == "openrouter-speech" else dialogue_tests.build(speech)
+
+        async def collect():
+            return [frame async for frame in service.run_tts("New sentence.", "next-turn")]
+
+        task = asyncio.create_task(collect())
+        try:
+            await response.entered.wait()
+            await service.on_audio_context_interrupted("old-turn")
+            assert not task.done(), "Stale interruption canceled a different synthesis context"
+            assert not response.closed
+            await service.on_audio_context_interrupted("next-turn")
+            assert task.cancelled() and response.closed
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("silent", [False, True])
 def test_error_or_silence_is_fatal_and_redacted(frames, silent):
     class Speech:

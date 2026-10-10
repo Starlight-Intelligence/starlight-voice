@@ -23,6 +23,7 @@ def create_openrouter_speech_tts(*, api_key: str, voice_id: str, model: str,
                 push_start_frame=True, push_stop_frames=True, stop_frame_timeout_s=timeout_s + 3,
             )
             self._synthesis_task = None
+            self._synthesis_context = None
 
         def can_generate_metrics(self):
             return True
@@ -37,6 +38,7 @@ def create_openrouter_speech_tts(*, api_key: str, voice_id: str, model: str,
                 yield text
 
             self._synthesis_task = asyncio.current_task()
+            self._synthesis_context = context_id
             try:
                 await self.start_tts_usage_metrics(text)
                 async with aclosing(client.stream(sentence())) as audio:
@@ -53,12 +55,15 @@ def create_openrouter_speech_tts(*, api_key: str, voice_id: str, model: str,
             except SpeechError:
                 yield ErrorFrame(error="OpenRouter speech synthesis failed or timed out", fatal=True)
             finally:
-                self._synthesis_task = None
+                if self._synthesis_task is asyncio.current_task() and self._synthesis_context == context_id:
+                    self._synthesis_task = None
+                    self._synthesis_context = None
                 await self.stop_ttfb_metrics()
 
         async def on_audio_context_interrupted(self, context_id: str):
             task = self._synthesis_task
-            if task is not None and task is not asyncio.current_task() and not task.done():
+            if (self._synthesis_context == context_id and task is not None
+                    and task is not asyncio.current_task() and not task.done()):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
             await super().on_audio_context_interrupted(context_id)

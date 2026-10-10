@@ -32,6 +32,7 @@ def create_dialogue_tts(*, api_key: str, voice_id: str, model: str,
                 stop_frame_timeout_s=timeout_s + 3,
             )
             self._synthesis_task = None
+            self._synthesis_context = None
 
         def can_generate_metrics(self):
             return True
@@ -49,6 +50,7 @@ def create_dialogue_tts(*, api_key: str, voice_id: str, model: str,
                 yield text
 
             self._synthesis_task = asyncio.current_task()
+            self._synthesis_context = context_id
             try:
                 await self.start_tts_usage_metrics(text)
                 async with aclosing(client.stream(sentence())) as audio:
@@ -67,12 +69,15 @@ def create_dialogue_tts(*, api_key: str, voice_id: str, model: str,
                 # or silently switching the selected provider/voice.
                 yield ErrorFrame(error="ElevenLabs dialogue synthesis failed or timed out", fatal=True)
             finally:
-                self._synthesis_task = None
+                if self._synthesis_task is asyncio.current_task() and self._synthesis_context == context_id:
+                    self._synthesis_task = None
+                    self._synthesis_context = None
                 await self.stop_ttfb_metrics()
 
         async def on_audio_context_interrupted(self, context_id: str):
             task = self._synthesis_task
-            if task is not None and task is not asyncio.current_task() and not task.done():
+            if (self._synthesis_context == context_id and task is not None
+                    and task is not asyncio.current_task() and not task.done()):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
             await super().on_audio_context_interrupted(context_id)

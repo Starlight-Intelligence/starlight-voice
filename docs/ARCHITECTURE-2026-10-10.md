@@ -58,6 +58,8 @@ There are no retries or silent switches. Caller cancellation propagates and the
 response/client close when the consumer closes the generator. The lazy Pipecat
 binding labels frames as 24 kHz mono, retains context IDs and emits fatal redacted
 errors for failed or silent synthesis. The base graph handles sentence ordering.
+Both speech bindings cancel only the synthesis task belonging to the interrupted
+context. A late interruption of an older sentence must not cancel the next one.
 
 The named serious alternatives remain the direct ElevenLabs 48 kHz dialogue
 WebSocket and native Grok/OpenAI conversation transports. REST requires a complete
