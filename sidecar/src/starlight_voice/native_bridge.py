@@ -226,8 +226,15 @@ class NativeBridge:
             ):
                 raise BridgeError("A bounded objective and acceptance draft is required")
         elif needs_query:
-            if set(args) != {"query"} or not isinstance(args["query"], str) or not 1 <= len(args["query"].strip()) <= 512:
+            if set(args) != {"query"} or not isinstance(args["query"], str) or not args["query"].strip() or len(args["query"]) > 512:
                 raise BridgeError("A bounded query is required")
+            try:
+                # The existing JavaScript gateway counts UTF-16 code units.
+                query_units = len(args["query"].encode("utf-16-le")) // 2
+            except UnicodeError:
+                raise BridgeError("A valid Unicode query is required") from None
+            if query_units > 512:
+                raise BridgeError("Query exceeds the gateway's 512 UTF-16 unit limit")
         elif args:
             raise BridgeError("This tool accepts no arguments")
         with self.lock:
@@ -274,7 +281,7 @@ class NativeBridge:
             reader = LocalMcpReader(endpoint, token)
             result = await reader.call("memory_recall", {"query": args["query"], "limit": 4}, projection=True)
             return {"status": "ok", "source": "signed-summary-projection", "reference": tool_text(result)[:3000],
-                    "instruction_authority": False}
+                    "projection_watermark": result["projection_watermark"], "instruction_authority": False}
         # Shared plane is reused only for metadata; its canonical memory tools
         # are intentionally absent. The bearer never enters a browser response.
         token = os.environ.get("STARLIGHT_TOOL_PLANE_TOKEN")

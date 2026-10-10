@@ -110,6 +110,51 @@ def test_projection_never_falls_back_to_private_vault(bridge, monkeypatch):
     assert "projection" in result["reason"]
 
 
+@pytest.mark.parametrize("name", ["sis_recall_projection", "project_context"])
+@pytest.mark.parametrize("query", ["\U0001f9ed" * 257, " " * 600 + "Project", "\ud800"], ids=["emoji-over-limit", "padding-over-limit", "invalid-surrogate"])
+def test_recall_rejects_queries_the_gateway_cannot_admit_without_spending_a_tool_call(bridge, monkeypatch, name, query):
+    async def forbidden(*args):
+        pytest.fail("Invalid gateway query reached a tool")
+
+    monkeypatch.setattr(bridge, "_read", forbidden)
+    session = start(bridge)
+    with pytest.raises(BridgeError):
+        run(bridge.tool(call(session, name=name, arguments={"query": query}), session["capability"]))
+    assert bridge.session.remaining_calls == 20
+
+
+@pytest.mark.parametrize("query", ["x" * 512, "\U0001f9ed" * 256], ids=["ascii-boundary", "emoji-boundary"])
+def test_recall_accepts_the_actual_gateway_query_boundary(bridge, monkeypatch, query):
+    async def read(name, arguments):
+        assert name == "sis_recall_projection" and arguments == {"query": query}
+        return {"status": "ok"}
+
+    monkeypatch.setattr(bridge, "_read", read)
+    session = start(bridge)
+    assert run(bridge.tool(call(session, name="sis_recall_projection", arguments={"query": query}), session["capability"])) == {"status": "ok"}
+
+
+def test_projection_delivers_watermark_as_reference_without_claiming_snapshot_binding(bridge, monkeypatch):
+    monkeypatch.setenv("STARLIGHT_VOICE_PROJECTION_MCP_URL", "http://127.0.0.1:8787/mcp")
+    monkeypatch.setenv("STARLIGHT_VOICE_PROJECTION_MCP_TOKEN", "private-bearer")
+    watermark = {"projection_id": "a" * 64, "policy": "public-summaries-only", "observed_before_recall": True, "recall_snapshot_verified": False}
+
+    class Reader:
+        def __init__(self, endpoint, token):
+            assert endpoint == "http://127.0.0.1:8787/mcp" and token == "private-bearer"
+
+        async def call(self, name, args, *, projection):
+            assert name == "memory_recall" and args == {"query": "Project", "limit": 4} and projection
+            return {"content": [{"type": "text", "text": "Approved reference"}], "projection_watermark": watermark}
+
+    monkeypatch.setattr("starlight_voice.native_bridge.LocalMcpReader", Reader)
+    session = start(bridge)
+    result = run(bridge.tool(call(session, name="project_context", arguments={"query": "Project"}), session["capability"]))
+    assert result["projection_watermark"] == watermark
+    assert result["instruction_authority"] is False and result["reference"] == "Approved reference"
+    assert "private-bearer" not in json.dumps(result)
+
+
 def test_prepare_mission_is_a_typed_ephemeral_draft_not_a_write(bridge, tmp_path):
     bridge.observation_path = tmp_path / "observations.jsonl"
     session = start(bridge)

@@ -54,6 +54,7 @@ class LocalMcpReader:
         session_id = None
         in_flight = None
         cancel_request = None
+        projection_watermark = None
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/json, text/event-stream", "Content-Type": "application/json",
@@ -135,14 +136,23 @@ class LocalMcpReader:
                             "public-summaries-only", "public-and-explicitly-enabled-private-shareable-summaries-only",
                         }:
                             raise ProjectionUnavailable("Memory projection policy is not approved")
-                        if not isinstance(status.get("projection_id"), str) or len(status["projection_id"]) != 64:
+                        if not isinstance(status.get("projection_id"), str) or len(status["projection_id"]) != 64 or any(
+                            character not in "0123456789abcdef" for character in status["projection_id"]
+                        ):
                             raise ProjectionUnavailable("Memory projection watermark is missing")
+                        # Sync status precedes recall; the gateway may refresh
+                        # between requests. This is not a per-result binding.
+                        projection_watermark = {"projection_id": status["projection_id"], "policy": status["policy"],
+                                                "observed_before_recall": True, "recall_snapshot_verified": False}
                     if name is None:
                         result = await request("ping", None, 3)
                         if result != {}:
                             raise ProjectionUnavailable("Invalid MCP ping result")
                         return result
-                    return await request("tools/call", {"name": name, "arguments": arguments}, 3)
+                    result = await request("tools/call", {"name": name, "arguments": arguments}, 3)
+                    if projection_watermark is not None:
+                        return {**result, "projection_watermark": projection_watermark}
+                    return result
             except asyncio.CancelledError:
                 cancel_request = in_flight
                 raise

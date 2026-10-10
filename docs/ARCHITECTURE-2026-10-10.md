@@ -49,8 +49,9 @@ credentials, tool execution or conversational latency.
 
 ## Verification
 
-155 offline Python tests and 18 Node tests pass; five optional Pipecat tests skip.
-Ruff passes. The local HTTP server suite remains excluded under the no-server-start
+The current query/watermark regressions, broker and turn-observation suites pass
+86 tests locally; Ruff passes. Full per-OS, native-client, SDK and Rust checks run
+in hosted CI. The local HTTP server suite remains excluded under the no-server-start
 constraint. Hosted CI can exercise that suite on its own runners. Fake transports
 establish protocol and cleanup behavior, not live audio quality or latency.
 
@@ -123,6 +124,16 @@ the Voice client trusts this explicitly configured local service. Approved summa
 are delivered as function output with no instruction authority. Raw audio, transcripts
 and tool arguments are not persisted by this path; provider retention remains governed
 by the chosen account and provider terms.
+
+Recall now returns the validated lowercase SHA-256 projection watermark and approved
+policy observed before the request, with `observed_before_recall: true` and
+`recall_snapshot_verified: false`. Tool content cannot overwrite these fields.
+The existing gateway refreshes its projection for each tool request, so its earlier
+sync watermark cannot prove which snapshot produced a later recall. A gateway-owned
+atomic snapshot and per-result binding are still required for that proof; polling
+sync status again would not rule out an intervening A-to-B-to-A refresh. No extra
+RPC is added to this voice read. Queries must fit the gateway's 512 UTF-16 code-unit
+limit, including padding; malformed Unicode is rejected before spending a tool call.
 
 Both paths request MCP 2025-11-25 and accept the negotiated 2025-03-26,
 2025-06-18 or 2025-11-25 version, sending its header on subsequent requests even
