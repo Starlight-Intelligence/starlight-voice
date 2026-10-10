@@ -33,12 +33,20 @@ def test_settings_from_env_overrides(monkeypatch) -> None:
     s = Settings.from_env()
     assert s.tts_engine == "kokoro"
     assert s.stt_engine == "faster-whisper"
-    assert s.llm_model == "openai/gpt-5"  # unset -> default
+    assert s.llm_model == "openai/gpt-oss-120b"  # supported Cerebras route
 
 
 def test_settings_from_env_blank_falls_back_to_default(monkeypatch) -> None:
     monkeypatch.setenv("STARLIGHT_TTS_ENGINE", "   ")
     assert Settings.from_env().tts_engine == "elevenlabs"
+
+
+def test_tts_model_can_be_selected_without_changing_voice_identity(monkeypatch):
+    monkeypatch.setenv("STARLIGHT_TTS_MODEL", "eleven_v4_turbo")
+    monkeypatch.setenv("STARLIGHT_TTS_VOICE_ID", "stable-voice-id")
+    settings = Settings.from_env()
+    assert settings.tts_model == "eleven_v4_turbo"
+    assert settings.tts_voice_id == "stable-voice-id"
 
 
 def test_load_local_env_preserves_special_chars_and_strips_inline_comments(tmp_path, monkeypatch) -> None:

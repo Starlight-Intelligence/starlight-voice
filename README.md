@@ -6,6 +6,10 @@ Starlight Voice is the extracted voice runtime for the Starlight ecosystem: a Ta
 
 ## Current State
 
+The [10 October architecture assessment](docs/ARCHITECTURE-2026-10-10.md) records
+current source boundaries, provider research, offline fixes and remaining runtime
+acceptance. Provider quality, first-audio latency and session RAM remain unverified.
+
 This repo is **portable but not finished**.
 
 What exists today:

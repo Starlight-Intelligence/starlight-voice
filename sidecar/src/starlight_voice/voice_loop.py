@@ -25,6 +25,8 @@ from .config import Settings
 
 def _stt_service(settings: Settings):
     """Cloud STT. Default Groq Whisper (live GROQ_API_KEY)."""
+    if settings.stt_engine != "groq-openrouter":
+        raise adapters.VoiceDepsUnavailable(f"STT engine '{settings.stt_engine}' is not implemented in this graph")
     from pipecat.services.groq.stt import GroqSTTService
 
     return GroqSTTService(
@@ -62,9 +64,15 @@ def _llm_service(settings: Settings):
 
 def _tts_service(settings: Settings):
     """Cloud TTS. Default ElevenLabs Flash v2.5 streaming (live ELEVENLABS_API_KEY)."""
+    if settings.tts_engine != "elevenlabs":
+        raise adapters.VoiceDepsUnavailable(f"TTS engine '{settings.tts_engine}' is not implemented in this graph")
+    if settings.tts_model not in {"eleven_flash_v2_5", "eleven_flash_v2", "eleven_multilingual_v2"}:
+        raise adapters.VoiceDepsUnavailable(
+            f"TTS model '{settings.tts_model}' needs the dialogue adapter; this Pipecat graph uses the TTS endpoint"
+        )
     from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 
-    kwargs = {"api_key": os.environ.get("ELEVENLABS_API_KEY"), "model": "eleven_flash_v2_5"}
+    kwargs = {"api_key": os.environ.get("ELEVENLABS_API_KEY"), "model": settings.tts_model}
     if settings.tts_voice_id:
         kwargs["voice_id"] = settings.tts_voice_id
     return ElevenLabsTTSService(**kwargs)
@@ -101,12 +109,18 @@ def should_recall(route_tier: str | None) -> bool:
     return route_tier != RouteTier.FAST.value
 
 
-def _memory_processor(context):
-    """FrameProcessor that grounds each non-FAST turn with SIS memory recall (degrade-first).
+def with_reference_context(metadata: dict | None, block: str) -> dict:
+    """Keep retrieved data outside policy roles until a typed tool-result adapter admits it."""
+    return {**(metadata or {}), "reference_context": {
+        "content": block, "trust": "untrusted", "source": "sis-memory",
+    }}
 
-    Reads the route_tier the RouterProcessor stamped, queries the gateway with a hard timeout,
-    and injects results as an UNTRUSTED system message into the shared LLMContext for the turn.
-    A dead/missing gateway -> empty recall -> the turn proceeds context-less (never stalls).
+
+def _memory_processor():
+    """Bound async recall to 120 ms and preserve it as reference metadata.
+
+    This frame metadata is not yet consumed by the LLM context aggregator. A registered
+    read tool must replace it before claiming provider-visible memory grounding.
     """
     from pipecat.frames.frames import TranscriptionFrame
     from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -121,9 +135,9 @@ def _memory_processor(context):
             if isinstance(frame, TranscriptionFrame) and getattr(frame, "text", "").strip():
                 tier = (getattr(frame, "metadata", {}) or {}).get("route_tier")
                 if should_recall(tier) and client.available():
-                    block = client.as_context_block(frame.text)
+                    block = await client.as_context_block_async(frame.text)
                     if block:
-                        context.add_message({"role": "system", "content": block})
+                        frame.metadata = with_reference_context(getattr(frame, "metadata", {}), block)
             await self.push_frame(frame, direction)
 
     return MemoryContextProcessor()
@@ -161,7 +175,7 @@ def build_graph(settings: Settings | None = None, *, with_transport: bool):
         }]
     )
     pair = LLMContextAggregatorPair(context)
-    memory_proc = _memory_processor(context)  # grounds non-FAST turns from SIS memory (degrade-first)
+    memory_proc = _memory_processor()
 
     transport = None
     head: list = []

@@ -32,6 +32,8 @@ def system_status() -> dict:
             for v in VARIANTS.values()
         ],
         "first_audio_budget_ms": settings.first_audio_p50_budget_ms,
-        "gateway": "running" if discover_gateway() else "not running",
+        "gateway": "configured-unverified" if discover_gateway() else "unconfigured",
+        "runtime_verified": False,
+        "memory_grounding": "reference-metadata-only",
         "runs": read_runs(8),
     }

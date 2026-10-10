@@ -72,12 +72,13 @@ class Settings:
     stt_device: str = "cpu"                       # only used by local tier; cuda|cpu
 
     # LLM (via OpenRouter gateway per global doctrine)
-    llm_model: str = "openai/gpt-5"
+    llm_model: str = "openai/gpt-oss-120b"
     llm_base_url: str = "https://openrouter.ai/api/v1"
     llm_fast_provider: str = "cerebras"          # OpenRouter provider pin for the FAST/voice tier (else TTFT SLA breaks)
 
     # TTS — cloud-first default (ElevenLabs key is live; Cartesia Sonic-3.5 when keyed)
     tts_engine: str = "elevenlabs"               # elevenlabs | cartesia | kokoro(local) | piper(local)
+    tts_model: str = "eleven_flash_v2_5"
     tts_voice_id: str = ""                       # engine-specific; adapter picks a sensible default when blank
     tts_device: str = "cpu"                       # only used by the local Kokoro/Piper tier
 
@@ -96,6 +97,7 @@ class Settings:
             llm_base_url=_env("OPENROUTER_BASE_URL", cls.llm_base_url),
             llm_fast_provider=_env("STARLIGHT_LLM_FAST_PROVIDER", cls.llm_fast_provider),
             tts_engine=_env("STARLIGHT_TTS_ENGINE", cls.tts_engine),
+            tts_model=_env("STARLIGHT_TTS_MODEL", cls.tts_model),
             tts_voice_id=_env("STARLIGHT_TTS_VOICE_ID", cls.tts_voice_id),
             tts_device=_env("STARLIGHT_TTS_DEVICE", cls.tts_device),
         )

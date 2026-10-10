@@ -129,7 +129,7 @@ async function poll() {
     renderBudget(s.first_audio_budget_ms ?? null);
     const up = s.gateway === "running";
     const gw = $("gateway");
-    gw.textContent = up ? "gateway: running" : "gateway: not running";
+    gw.textContent = `gateway: ${s.gateway ?? "unknown"}`;
     gw.className = `gateway ${up ? "up" : "down"}`;
     $("liveState").className = "live ok";
     $("liveLabel").textContent = "live";

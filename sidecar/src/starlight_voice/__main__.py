@@ -136,10 +136,12 @@ def main(argv: list[str] | None = None) -> int:
             "settings": settings.to_dict(),
             "adapter_availability": availability,
             "selected_engines": selected,
-            "voice_loop_ready": not missing,
+            "voice_loop_ready": False,
+            "dependencies_available": not missing,
+            "runtime_verified": False,
             "missing": missing,
             "install_hint": adapters.INSTALL_HINT,
-            "note": "Gated until P1 voice_loop.py is wired; run `python benchmarks/run.py --probe first-audio` for the SLA gate.",
+            "note": "Dependency presence does not prove a working voice session. Graph assembly, credentials, audio, tools and latency need separate verification.",
         }, separators=(",", ":")))
         return 0
 
