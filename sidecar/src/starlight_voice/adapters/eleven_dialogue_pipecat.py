@@ -53,9 +53,11 @@ def create_dialogue_tts(*, api_key: str, voice_id: str, model: str,
                             first_audio = False
                         yield TTSAudioRawFrame(chunk, 48000, 1, context_id=context_id)
                     if first_audio:
-                        yield ErrorFrame(error="ElevenLabs dialogue returned no audio")
+                        yield ErrorFrame(error="ElevenLabs dialogue returned no audio", fatal=True)
             except DialogueError:
-                yield ErrorFrame(error="ElevenLabs dialogue synthesis failed or timed out")
+                # End the worker rather than leaving a silent audio context alive
+                # or silently switching the selected provider/voice.
+                yield ErrorFrame(error="ElevenLabs dialogue synthesis failed or timed out", fatal=True)
             finally:
                 self._synthesis_task = None
                 await self.stop_ttfb_metrics()

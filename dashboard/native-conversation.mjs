@@ -24,6 +24,38 @@ export function decodePcm16(encoded) {
   return samples;
 }
 
+// Event metadata only. Scheduled PCM is a client estimate; neither transport
+// exposes verified per-turn audible playback here. Never substitute zero for unknown.
+export class TurnObservations {
+  constructor(record, now = () => performance.now()) {
+    this.record = record; this.now = now; this.sequence = 0; this.inputEnd = null; this.current = null;
+  }
+  elapsed(origin = this.inputEnd) { return origin === null ? null : Math.max(0, Math.min(300000, this.now() - origin)); }
+  speechStopped() { this.inputEnd = this.now(); }
+  created() {
+    if (this.current) this.done("unknown");
+    if (this.sequence >= 100) throw new Error("Turn limit reached; reconnect to continue");
+    this.currentOrigin = this.inputEnd;
+    this.current = { sequence: ++this.sequence, status: "unknown", interrupted: false,
+      response_created_ms: this.elapsed(), first_scheduled_audio_ms: null, response_done_ms: null, token_counts: null };
+  }
+  scheduled(delayMs) {
+    if (!this.current || this.current.first_scheduled_audio_ms !== null || this.currentOrigin === null || !Number.isFinite(delayMs)) return;
+    this.current.first_scheduled_audio_ms = Math.min(300000, this.elapsed(this.currentOrigin) + Math.max(0, delayMs));
+  }
+  interrupt() { if (this.current) this.current.interrupted = true; }
+  done(status, usage) {
+    if (!this.current) return;
+    const observation = this.current; this.current = null;
+    observation.status = ["completed", "cancelled", "failed", "incomplete", "stopped"].includes(status) ? status : "unknown";
+    observation.response_done_ms = this.elapsed(this.currentOrigin);
+    if (usage && [usage.input_tokens, usage.output_tokens].every((value) => Number.isInteger(value) && value >= 0 && value <= 1e7)) {
+      observation.token_counts = { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens };
+    }
+    this.record(observation);
+  }
+}
+
 // Wait for the complete response and all parallel tool results before ONE
 // response.create. Never race individual tool completions against generation.
 export class ToolBatch {
@@ -74,6 +106,7 @@ export class PcmPlayback {
     this.nodes.add(source);
     source.onended = () => { this.nodes.delete(source); source.disconnect(); };
     source.start(start);
+    return Math.max(0, (start - this.context.currentTime) * 1000);
   }
   interrupt() {
     const heardMs = this.firstStart === null ? 0 : Math.max(0, Math.floor((Math.min(this.context.currentTime, this.nextTime) - this.firstStart) * 1000));
@@ -110,6 +143,7 @@ export class NativeConversation {
     if (this.active) return;
     const epoch = ++this.epoch;
     this.active = true; this.ready = false; this.muted = false; this.blockAudio = false; this.responding = false; this.interrupted = false;
+    this.providerResponseId = null;
     this.abort = new AbortController();
     this.state("Requesting microphone permission…");
     try {
@@ -127,6 +161,18 @@ export class NativeConversation {
       const session = await this.post("/voice/session", { provider, voice });
       if (epoch !== this.epoch) { await this.releaseSession(session); return; }
       this.session = session;
+      this.observationWrites = new Set();
+      this.observationAbort = new AbortController();
+      const writes = this.observationWrites, observationAbort = this.observationAbort;
+      this.observations = new TurnObservations((observation) => {
+        if (writes.size >= 3) { this.state("Listening · turn history fell behind", true); return; }
+        const request = this.post("/voice/observation", { session_id: session.session_id, observation }, {
+          capability: session.capability,
+          signal: AbortSignal.any([observationAbort.signal, AbortSignal.timeout(2000)]), keepalive: true,
+        }).catch(() => { if (epoch === this.epoch) this.state("Listening · turn history unavailable", true); });
+        writes.add(request);
+        request.finally(() => writes.delete(request));
+      });
       this.tools = new ToolBatch(async (callId, name, args) => this.post("/voice/tool", {
         session_id: session.session_id, call_id: callId, name, arguments: args,
       }), (event) => { if (epoch === this.epoch) this.send(event); });
@@ -217,11 +263,19 @@ export class NativeConversation {
     channel.onclose = () => { if (epoch === this.epoch) this.stop("Voice connection closed"); };
   }
   event(event) {
+    const responseId = event.response_id ?? event.response?.id;
+    if (event.type !== "response.created" && typeof responseId === "string" && this.providerResponseId && responseId !== this.providerResponseId) return;
     switch (event.type) {
       case "session.updated": this.listen(); break;
-      case "response.created": this.blockAudio = false; this.responding = true; this.interrupted = false; this.onText("\n"); this.state("Responding"); break;
+      case "response.created":
+        if (typeof responseId === "string" && responseId === this.providerResponseId) return;
+        this.providerResponseId = typeof responseId === "string" && responseId.length <= 128 ? responseId : null;
+        this.observations?.created(); this.blockAudio = false; this.responding = true; this.interrupted = false;
+        this.onText("\n"); this.state("Responding"); break;
+      case "input_audio_buffer.speech_stopped": this.observations?.speechStopped(); break;
       case "input_audio_buffer.speech_started": {
         this.interrupted = true;
+        this.observations?.interrupt();
         if (this.session?.provider === "grok") {
           this.blockAudio = true;
           if (this.responding) this.send({ type: "response.cancel" });
@@ -231,7 +285,10 @@ export class NativeConversation {
         this.state("Listening"); break;
       }
       case "response.output_audio.delta": case "response.audio.delta":
-        if (!this.blockAudio && this.playback) this.playback.enqueue(event.delta, event.item_id);
+        if (!this.blockAudio && this.playback) {
+          const delayMs = this.playback.enqueue(event.delta, event.item_id);
+          this.observations?.scheduled(delayMs);
+        }
         break;
       case "response.output_audio_transcript.delta": case "response.audio_transcript.delta":
       case "response.output_text.delta": case "response.text.delta":
@@ -239,6 +296,7 @@ export class NativeConversation {
       case "response.function_call_arguments.done": this.tools?.add(event); break;
       case "response.done":
         this.responding = false;
+        this.observations?.done(event.response?.status, event.response?.usage);
         this.tools?.done(!this.interrupted && event.response?.status !== "cancelled" && event.response?.status !== "failed")
           .catch(() => this.stop("Tool result could not be delivered", true));
         this.state(this.muted ? "Microphone muted" : "Listening"); break;
@@ -261,6 +319,7 @@ export class NativeConversation {
     } catch { /* Local authority expires even if the cleanup request cannot arrive. */ }
   }
   async stop(label = "Stopped", error = false) {
+    this.observations?.done("stopped"); this.observations = null;
     ++this.epoch; this.active = false; this.ready = false;
     clearTimeout(this.readyTimer); clearTimeout(this.limitTimer); this.abort?.abort();
     this.stream?.getTracks().forEach((track) => { track.onended = null; track.stop(); }); this.stream = null;
@@ -276,8 +335,12 @@ export class NativeConversation {
     this.source = this.capture = this.silent = null;
     const context = this.context; this.context = null;
     const session = this.session; this.session = null; this.tools = null;
+    const writes = [...(this.observationWrites || [])];
+    const observationAbort = this.observationAbort;
     this.state(label, error);
-    await Promise.allSettled([context?.close(), this.releaseSession(session)]);
+    await Promise.allSettled([context?.close(), ...writes]);
+    observationAbort?.abort();
+    await this.releaseSession(session);
   }
 }
 

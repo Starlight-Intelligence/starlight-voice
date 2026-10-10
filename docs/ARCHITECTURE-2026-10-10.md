@@ -44,7 +44,7 @@ credentials, tool execution or conversational latency.
 
 ## Verification
 
-130 offline Python tests and 13 Node tests pass; three optional Pipecat tests skip.
+154 offline Python tests and 18 Node tests pass; five optional Pipecat tests skip.
 Ruff passes. The local HTTP server suite remains excluded under the no-server-start
 constraint. Hosted CI can exercise that suite on its own runners. Fake transports
 establish protocol and cleanup behavior, not live audio quality or latency.
@@ -109,11 +109,33 @@ command. The server loads its local environment only on explicit startup. The
 native path requires neither Pipecat nor local model/audio-device wheels. No RAM
 claim follows until a real browser/session is measured.
 
+## Turn observations
+
+The browser submits enum/count/timing metadata to the same-origin, capability-gated
+`/voice/observation` route. The local append-only file lives beside the existing run
+ledger in ignored `memory/voice/`, with at most 100 records per session and a 32 MiB
+storage cap. Repeating the same sequence is idempotent; replacing it is refused.
+Storage failure is reported, leaves the record retryable, and preserves existing
+history. Stop closes media first, lets bounded pending metadata writes finish,
+then releases the local capability.
+
+`voice.turn-observation.v1` is an observation format, not the proposed completed
+Voice Edge receipt. Provider configuration and cumulative tool result counts come
+from the broker. Browser status, token counts and durations are explicitly
+unverified. Grok records a first scheduled PCM estimate relative to detected
+speech end. WebRTC leaves that estimate unknown. Both retain unknown audible
+latency, dollars and quality verdicts; neither transport proves actual per-turn
+speaker output. Raw transcripts, audio, provider response IDs, tool arguments and
+credentials are excluded. The recent-run read tool returns sanitized observation
+summaries with acceptance unverified. These records support later validation;
+they do not satisfy the conversation quality or latency gate by themselves.
+
 ## Remaining work
 
 Select and listen to an account voice through the ElevenLabs component pipeline;
-connect durable dispatch/approval, verified memory deployment and turn
-receipts; verify real provider authentication and audio interruption. Browser
+connect durable dispatch/approval and verified memory deployment; add trusted
+playback, billing and reviewed quality evidence to turn receipts. Verify real
+provider authentication and audio interruption. Browser
 appearance, touch and keyboard behavior need inspection under an authorized runtime
 or preview. Compare native conversation and GPT Live delegation on matched tasks.
 Obtain independent revision review before release and measure

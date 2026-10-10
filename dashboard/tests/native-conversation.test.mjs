@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { NativeConversation, PcmPlayback, ToolBatch, decodePcm16, pcm16Base64 } from "../native-conversation.mjs";
+import { NativeConversation, PcmPlayback, ToolBatch, TurnObservations, decodePcm16, pcm16Base64 } from "../native-conversation.mjs";
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
@@ -179,7 +179,19 @@ test("Grok connects with an ephemeral subprotocol and gates mic until session.up
   assert.equal(track.enabled, true);
   worklets[0].port.onmessage({ data: new Float32Array(960) });
   assert.equal(sent.at(-1).type, "input_audio_buffer.append");
+  conversation.event({ type: "input_audio_buffer.speech_stopped" });
+  conversation.event({ type: "response.created" });
+  conversation.event({ type: "response.output_audio.delta", item_id: "provider-item", delta: "AQA=" });
+  conversation.event({ type: "response.audio_transcript.delta", delta: "private transcript" });
+  conversation.event({ type: "response.done", response: { status: "completed", usage: {
+    input_tokens: 12, output_tokens: 3, details: "private detail",
+  } } });
   await conversation.stop();
+  const record = JSON.parse(requests.find((request) => request.path === "/voice/observation").options.body);
+  assert.equal(record.observation.status, "completed");
+  assert.ok(record.observation.first_scheduled_audio_ms >= 15);
+  assert.deepEqual(record.observation.token_counts, { input_tokens: 12, output_tokens: 3 });
+  assert.ok(!JSON.stringify(record).includes("private") && !JSON.stringify(record).includes("provider-item"));
   assert.equal(sockets[0].closed, true); assert.equal(contexts[0].closed, true);
   assert.equal(requests.at(-1).path, "/voice/stop");
 });
@@ -214,5 +226,74 @@ test("OpenAI negotiates native WebRTC with the ephemeral key and cleans up", asy
   assert.deepEqual(peers[0].remote, { type: "answer", sdp: "mock-answer" });
   peers[0].dc.onopen(); assert.equal(track.enabled, true);
   assert.ok(!("client_secret" in conversation.session));
+  conversation.event({ type: "input_audio_buffer.speech_stopped" });
+  conversation.event({ type: "response.created" });
+  conversation.event({ type: "response.done", response: { status: "completed" } });
   await conversation.stop(); assert.equal(peers[0].closed, true);
+  const record = JSON.parse(requests.find((request) => request.path === "/voice/observation").options.body);
+  assert.equal(record.observation.first_scheduled_audio_ms, null);
+  assert.equal(record.observation.token_counts, null);
+});
+
+test("turn timing retains its original speech-end across interruption and next input", () => {
+  let time = 100; const records = [];
+  const observer = new TurnObservations((record) => records.push(record), () => time);
+  observer.speechStopped(); time = 150; observer.created();
+  time = 170; observer.scheduled(15);
+  time = 180; observer.interrupt();
+  time = 300; observer.speechStopped();
+  time = 350; observer.done("cancelled");
+  assert.deepEqual(records[0], { sequence: 1, status: "cancelled", interrupted: true,
+    response_created_ms: 50, first_scheduled_audio_ms: 85, response_done_ms: 250, token_counts: null });
+});
+
+test("unsolicited output and malformed usage remain unknown rather than zero or dollars", () => {
+  const records = [], observer = new TurnObservations((record) => records.push(record), () => 50);
+  observer.created(); observer.scheduled(15); observer.done("completed", { input_tokens: true, output_tokens: -1 });
+  assert.equal(records[0].response_created_ms, null);
+  assert.equal(records[0].response_done_ms, null);
+  assert.equal(records[0].first_scheduled_audio_ms, null);
+  assert.equal(records[0].token_counts, null);
+  assert.ok(!("cost" in records[0]) && !("quality" in records[0]));
+  observer.done("completed"); assert.equal(records.length, 1);
+});
+
+test("turn count is bounded and overlapping responses preserve an unknown prior result", () => {
+  const records = [], observer = new TurnObservations((record) => records.push(record), () => 0);
+  observer.created(); observer.created();
+  assert.equal(records[0].status, "unknown");
+  observer.done("completed");
+  for (let i = 2; i < 100; i++) { observer.created(); observer.done("completed"); }
+  assert.equal(records.length, 100);
+  assert.throws(() => observer.created(), /Turn limit reached/);
+});
+
+test("Stop closes media before waiting for metadata, then releases authority", async () => {
+  const write = deferred(), closed = [], requests = [];
+  const conversation = new NativeConversation({ fetchFn: async (path) => {
+    requests.push(path); return { ok: true, json: async () => ({ ok: true }) };
+  } });
+  conversation.active = true;
+  conversation.session = { session_id: "session", capability: "cap" };
+  conversation.stream = { getTracks: () => [{ stop: () => closed.push("track") }] };
+  conversation.observationWrites = new Set([write.promise]);
+  const stopped = conversation.stop();
+  await flush();
+  assert.deepEqual(closed, ["track"]); assert.deepEqual(requests, []);
+  write.resolve(); await stopped;
+  assert.deepEqual(requests, ["/voice/stop"]);
+});
+
+test("late events from an older response cannot play or finish the current turn", () => {
+  const records = [], conversation = new NativeConversation(); let played = 0;
+  conversation.observations = new TurnObservations((record) => records.push(record), () => 100);
+  conversation.playback = { enqueue: () => played++ };
+  conversation.event({ type: "response.created", response: { id: "current" } });
+  conversation.event({ type: "response.created", response: { id: "current" } });
+  conversation.event({ type: "response.audio.delta", response_id: "old", delta: "invalid" });
+  conversation.event({ type: "response.done", response: { id: "old", status: "completed" } });
+  assert.equal(played, 0); assert.equal(records.length, 0); assert.equal(conversation.responding, true);
+  conversation.event({ type: "response.done", response: { id: "current", status: "completed" } });
+  assert.equal(records.length, 1); assert.equal(records[0].sequence, 1);
+  assert.ok(!JSON.stringify(records[0]).includes("current"));
 });

@@ -114,7 +114,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._serve_file(*entry)
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path in {"/voice/session", "/voice/tool", "/voice/stop"}:
+        if urlparse(self.path).path in {"/voice/session", "/voice/tool", "/voice/stop", "/voice/observation"}:
             self._voice_post()
             return
         if urlparse(self.path).path != "/ratings":
@@ -183,6 +183,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result = asyncio.run(bridge.start(payload))
             elif path == "/voice/tool":
                 result = asyncio.run(bridge.tool(payload, capability))
+            elif path == "/voice/observation":
+                result = bridge.observe(payload, capability)
             else:
                 result = bridge.stop(payload, capability)
             self._json(200, result)

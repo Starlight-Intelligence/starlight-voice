@@ -8,6 +8,7 @@ enforce one provider connection, a hard spending cap, or browser policy.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import secrets
@@ -18,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .mcp_projection import LocalMcpReader, ProjectionUnavailable, local_mcp_endpoint, tool_text
+from .turn_observations import append_observation, recent_observations, validate_observation
 
 INSTRUCTIONS = (
     "You are Starlight Voice, a concise, warm operator companion. Speak naturally. "
@@ -59,6 +61,10 @@ class Session:
     expires: float
     remaining_calls: int = 20
     calls: dict[str, dict | None] = field(default_factory=dict)
+    call_names: dict[str, str] = field(default_factory=dict)
+    observations: dict[int, str] = field(default_factory=dict)
+    provider: str = ""
+    voice: str = ""
 
 
 async def mint_secret(provider: str, voice: str, *, transport=None) -> dict:
@@ -103,8 +109,9 @@ async def mint_secret(provider: str, voice: str, *, transport=None) -> dict:
 
 
 class NativeBridge:
-    def __init__(self, *, mint=mint_secret, clock=time.monotonic):
+    def __init__(self, *, mint=mint_secret, clock=time.monotonic, observation_path: Path | None = None):
         self.mint, self.clock = mint, clock
+        self.observation_path = observation_path
         self.lock = threading.Lock()
         self.session: Session | None = None
         self.minting = False
@@ -135,7 +142,8 @@ class NativeBridge:
             self.minting, self.last_start = True, now
         try:
             secret = await self.mint(provider, voice)
-            session = Session(str(uuid.uuid4()), secrets.token_urlsafe(32), self.clock() + 300)
+            session = Session(str(uuid.uuid4()), secrets.token_urlsafe(32), self.clock() + 300,
+                              provider=provider, voice=voice)
             with self.lock:
                 self.session = session
             return {
@@ -164,6 +172,37 @@ class NativeBridge:
             self.session = None
         return {"ok": True, "provider_connection_revoked": False}
 
+    def observe(self, payload: dict, capability: str) -> dict:
+        if set(payload) != {"session_id", "observation"}:
+            raise BridgeError("Only turn observation metadata is accepted")
+        try:
+            metadata = validate_observation(payload["observation"])
+        except ValueError as error:
+            raise BridgeError(str(error)) from None
+        fingerprint = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()
+        with self.lock:
+            session = self.authorize(payload, capability)
+            sequence = metadata["sequence"]
+            if sequence in session.observations:
+                if session.observations[sequence] != fingerprint:
+                    raise BridgeError("A turn observation cannot be replaced", 409)
+                return {"stored": True, "duplicate": True, "acceptance_verified": False}
+            counts = {}
+            for call_id, result in session.calls.items():
+                status = result.get("status", "unknown") if result else "pending"
+                if status not in {"ok", "blocked", "unavailable", "pending"}:
+                    status = "unknown"
+                key = f"{session.call_names[call_id]}:{status}"
+                counts[key] = counts.get(key, 0) + 1
+            try:
+                append_observation(metadata, session_id=session.session_id, provider=session.provider,
+                                   model=PROVIDERS[session.provider]["model"], voice=session.voice,
+                                   tool_results=counts, path=self.observation_path)
+            except OSError:
+                raise BridgeError("Turn history could not be stored", 503) from None
+            session.observations[sequence] = fingerprint
+        return {"stored": True, "duplicate": False, "acceptance_verified": False}
+
     async def tool(self, payload: dict, capability: str) -> dict:
         if set(payload) != {"session_id", "call_id", "name", "arguments"}:
             raise BridgeError("Invalid tool envelope")
@@ -187,6 +226,7 @@ class NativeBridge:
                 raise BridgeError("Session tool budget exhausted", 429)
             session.remaining_calls -= 1
             session.calls[call_id] = None
+            session.call_names[call_id] = name
         try:
             result = await self._read(name, args)
         except asyncio.CancelledError:
@@ -206,7 +246,9 @@ class NativeBridge:
             from .cognition.ledger import read_runs
 
             return {"status": "ok", "runs": [{"status": str(run.get("status", "unknown"))[:40],
-                                               "tier": str(run.get("tier", "unknown"))[:8]} for run in read_runs(5)]}
+                                               "tier": str(run.get("tier", "unknown"))[:8]} for run in read_runs(5)],
+                    "turn_observations": recent_observations(path=self.observation_path),
+                    "voice_acceptance_verified": False}
         if name in {"sis_recall_projection", "project_context"}:
             endpoint = os.environ.get("STARLIGHT_VOICE_PROJECTION_MCP_URL", "")
             token = os.environ.get("STARLIGHT_VOICE_PROJECTION_MCP_TOKEN", "")

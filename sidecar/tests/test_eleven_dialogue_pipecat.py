@@ -18,8 +18,9 @@ def frames(monkeypatch):
             self.context_id = context_id
 
     class Error:
-        def __init__(self, *, error):
+        def __init__(self, *, error, fatal=False):
             self.error = error
+            self.fatal = fatal
 
     class Service:
         def __init__(self, **kwargs):
@@ -94,6 +95,7 @@ def test_failure_or_silence_emits_a_redacted_error_and_closes_stream(frames, sil
         result = [frame async for frame in service.run_tts("private text", "turn")]
         assert len(result) == 1 and isinstance(result[0], frames.Error)
         assert "private" not in result[0].error
+        assert result[0].fatal
         assert dialogue.closed and service._synthesis_task is None
         assert service.metrics_stopped == 1
     asyncio.run(run())
@@ -144,18 +146,22 @@ def test_closing_frame_generator_closes_the_real_dialogue_socket(frames):
     asyncio.run(run())
 
 
-def test_actual_pipecat_pipeline_orders_audio_and_stop_frames_without_devices():
+@pytest.mark.parametrize("mode", ["success", "error", "silent"])
+def test_actual_pipecat_pipeline_orders_audio_and_ends_on_failure_without_devices(mode):
     pytest.importorskip("pipecat")
     from pipecat.frames.frames import EndFrame, TTSAudioRawFrame, TTSSpeakFrame, TTSStartedFrame, TTSStoppedFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
-    from pipecat.pipeline.task import PipelineTask
+    from pipecat.pipeline.worker import PipelineWorker
     from pipecat.processors.frame_processor import FrameProcessor
 
     class Dialogue:
         async def stream(self, text):
             assert [part async for part in text] == ["Hello."]
-            yield b"\x01\x00" * 960
+            if mode == "error":
+                raise DialogueError("private-detail")
+            if mode == "success":
+                yield b"\x01\x00" * 960
 
     class Sink(FrameProcessor):
         def __init__(self):
@@ -170,12 +176,23 @@ def test_actual_pipecat_pipeline_orders_audio_and_stop_frames_without_devices():
     async def run():
         service = build(Dialogue())
         sink = Sink()
-        task = PipelineTask(Pipeline([service, sink]), enable_rtvi=False)
+        errors = []
+        task = PipelineWorker(Pipeline([service, sink]), enable_rtvi=False)
+
+        @task.event_handler("on_pipeline_error")
+        async def on_error(worker, frame):
+            errors.append(frame)
+
         await task.queue_frames([TTSSpeakFrame("Hello."), EndFrame()])
         await asyncio.wait_for(PipelineRunner(handle_sigint=False).run(task), timeout=10)
         relevant = [frame for frame in sink.frames
                     if isinstance(frame, (TTSStartedFrame, TTSAudioRawFrame, TTSStoppedFrame))]
-        assert [type(frame) for frame in relevant] == [TTSStartedFrame, TTSAudioRawFrame, TTSStoppedFrame]
-        assert relevant[1].sample_rate == 48000 and relevant[1].num_channels == 1
-        assert len({frame.context_id for frame in relevant}) == 1
+        if mode == "success":
+            assert [type(frame) for frame in relevant] == [TTSStartedFrame, TTSAudioRawFrame, TTSStoppedFrame]
+            assert relevant[1].sample_rate == 48000 and relevant[1].num_channels == 1
+            assert len({frame.context_id for frame in relevant}) == 1
+            assert not errors
+        else:
+            assert errors and errors[0].fatal and "private" not in errors[0].error
+            assert not any(isinstance(frame, TTSAudioRawFrame) for frame in relevant)
     asyncio.run(run())

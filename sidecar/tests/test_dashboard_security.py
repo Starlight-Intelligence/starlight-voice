@@ -70,3 +70,14 @@ def test_broker_errors_return_only_redacted_message():
     value.server.voice_bridge = SimpleNamespace(start=unavailable)
     value._voice_post()
     assert results == [(502, {"error": "Provider unavailable"})]
+
+
+def test_observation_route_uses_the_guarded_broker_without_starting_server():
+    payload = {"session_id": "session", "observation": {"sequence": 1}}
+    value, results = handler(json.dumps(payload).encode())
+    value.path = "/voice/observation"
+    value.headers["X-Voice-Capability"] = "cap"
+    seen = []
+    value.server.voice_bridge = SimpleNamespace(observe=lambda body, cap: seen.append((body, cap)) or {"stored": True})
+    value.do_POST()
+    assert seen == [(payload, "cap")] and results == [(200, {"stored": True})]
