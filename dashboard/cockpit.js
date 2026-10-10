@@ -127,9 +127,9 @@ async function poll() {
     renderAdapters(s.adapters);
     renderLedger(s.runs);
     renderBudget(s.first_audio_budget_ms ?? null);
-    const up = s.gateway === "running";
+    const up = false; // Configuration is not a runtime health result.
     const gw = $("gateway");
-    gw.textContent = `gateway: ${s.gateway ?? "unknown"}`;
+    gw.textContent = `Native projection: ${s.native_voice?.memory_projection_configured ? "configured · unverified" : "unconfigured"}`;
     gw.className = `gateway ${up ? "up" : "down"}`;
     $("liveState").className = "live ok";
     $("liveLabel").textContent = "Server connected";

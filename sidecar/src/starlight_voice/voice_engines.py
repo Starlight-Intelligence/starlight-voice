@@ -1,17 +1,8 @@
-"""Architecture bake-off — swap the engine block, keep the harness.
+"""Legacy Pipecat experiments, separate from the native browser transports.
 
-The key realization (verified against pipecat 1.3.0): "component pipeline" vs "speech-to-speech
-realtime" is NOT an either/or. Both run in the same Pipecat graph; you swap the middle:
-
-  Component (A):  transport.in -> STT -> [router] -> LLM -> TTS -> transport.out
-  OpenAI S2S (B): transport.in -> [router] -> OpenAIRealtimeLLMService(S2S) -> transport.out
-  Gemini S2S (C): same shape, Gemini multimodal-live (key-blocked: GEMINI slot holds an
-                  OpenRouter-format key per machine memory)
-
-This module assembles each variant for empirical comparison (Model-Arena style): measure
-first-audio latency, naturalness, tool/dispatch capability, barge-in, cost on-device. Variant A
-delegates to voice_loop (no duplication); B/C are built here. selftest_all() reports which
-variants assemble right now without guessing.
+Headless graph assembly establishes dependency/configuration compatibility only.
+Latency, naturalness, authentication, interruption and tool behavior need actual
+runtime verification. Native browser configuration lives in native_bridge.py.
 """
 
 from __future__ import annotations
@@ -41,17 +32,17 @@ class Variant:
 VARIANTS: dict[str, Variant] = {
     "component": Variant(
         "component", "Component pipeline (A)", "Groq STT + OpenRouter LLM + ElevenLabs TTS",
-        "OPENROUTER_API_KEY", "native (router FrameProcessor + LLM tool-calls)",
-        "swappable; ~800ms-tight on 1650; provider-pin dependent",
+        "OPENROUTER_API_KEY", "router interception; component function tools not registered",
+        "component experiment; first playable audio and cost unmeasured",
     ),
     "openai-realtime": Variant(
         "openai-realtime", "OpenAI Realtime S2S (B)", "OpenAIRealtimeLLMService (one socket: STT+LLM+TTS+turn)",
-        "OPENAI_API_KEY", "realtime function-calling (router still rides as FrameProcessor)",
-        "lowest latency + most natural; harder to inject mid-turn tool/approval logic",
+        "OPENAI_API_KEY", "legacy Pipecat experiment; native browser read tools are separate",
+        "speech-to-speech experiment; latency and preference unmeasured",
     ),
     "gemini-live": Variant(
-        "gemini-live", "Gemini Live S2S (C)", "Gemini multimodal-live (NOT installed / key-blocked)",
-        "GEMINI_API_KEY", "realtime function-calling", "S2S; blocked until real Google key + extra",
+        "gemini-live", "Gemini Live S2S (C)", "Gemini multimodal-live (optional Pipecat experiment)",
+        "GEMINI_API_KEY", "tool registration not bound", "requires optional runtime and verified Google API access",
     ),
 }
 

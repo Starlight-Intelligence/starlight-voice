@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .mcp_projection import LocalMcpReader, ProjectionUnavailable, tool_text
+from .mcp_projection import LocalMcpReader, ProjectionUnavailable, local_mcp_endpoint, tool_text
 
 INSTRUCTIONS = (
     "You are Starlight Voice, a concise, warm operator companion. Speak naturally. "
@@ -115,7 +115,10 @@ class NativeBridge:
             {"id": name, "model": spec["model"], "voices": spec["voices"],
              "configured": bool(os.environ.get(spec["key"])), "runtime_verified": False}
             for name, spec in PROVIDERS.items()
-        ], "memory_projection_configured": bool(os.environ.get("STARLIGHT_VOICE_PROJECTION_MCP_URL")),
+        ], "memory_projection_configured": bool(
+            local_mcp_endpoint(os.environ.get("STARLIGHT_VOICE_PROJECTION_MCP_URL", ""))
+            and os.environ.get("STARLIGHT_VOICE_PROJECTION_MCP_TOKEN")
+        ),
             "dispatch": "blocked", "max_session_seconds": 300, "tool_limit": 20,
             "provider_budget_enforced": False}
 
