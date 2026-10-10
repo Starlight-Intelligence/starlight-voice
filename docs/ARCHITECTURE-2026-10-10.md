@@ -40,18 +40,78 @@ credentials, tool execution or conversational latency.
 
 ## Verification
 
-81 offline tests pass and two provider suites skip because the optional Pipecat
-runtime is absent. Ruff passes. The local HTTP server suite was excluded to respect
-a no-server-start constraint. New tests cover engine selection, async retrieval,
-credential egress prevention, dialogue framing, final flush, malformed audio,
-provider failure, timeout and cancellation cleanup. Fake transports establish
-protocol and recovery behavior; no live synthesis claim follows from those checks.
+122 offline Python tests and 13 Node tests pass; two optional Pipecat suites skip.
+Ruff passes. The local HTTP server suite remains excluded under the no-server-start
+constraint. Hosted CI can exercise that suite on its own runners. Fake transports
+establish protocol and cleanup behavior, not live audio quality or latency.
+
+## Native browser conversation
+
+The existing loopback console now has an explicit Start, Mute and Stop flow. Grok
+uses `grok-voice-think-fast-2.0`, Ara or Orion, a short-lived WebSocket subprotocol
+credential, PCM16 at 48 kHz and `reasoning.effort: none`. OpenAI is a separate
+WebRTC choice using `gpt-realtime-2.1` and Marin or Cedar. These are account-access
+and listening candidates, not measured winners. Neither transport uses browser
+speech synthesis. [Grok speech guide](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech),
+[OpenAI WebRTC guide](https://developers.openai.com/api/docs/guides/voice-webrtc?voice-api=realtime)
+
+The broker issues credentials only on same-origin JSON POSTs with an exact local
+Host and Origin. It rejects transfer encoding, duplicate or excessive body lengths,
+arbitrary provider endpoints, models, instructions and tool definitions. API keys
+stay server-side. Responses are not cached, the console refuses framing and its
+content security policy limits executable content and network destinations.
+
+One local session is admitted at a time with a 60-second start cooldown and 20
+typed tool calls. Local tool authority expires after five minutes. Stop releases
+that authority and the browser closes media tracks, playback sources, worklet,
+socket or peer. Hidden tabs and Escape also stop capture. The client drops audio
+after interruption and bounds both upload and playback backlogs. Parallel function
+results arrive before one continuation response; cancelled turns do not trigger
+that continuation.
+
+These are local authority limits, not provider spending enforcement. Ephemeral
+credentials can establish multiple provider sessions until expiry, provider session
+settings can be client-controlled, and closing local authority cannot revoke a
+provider connection elsewhere. The five-minute browser timer is best effort.
+An abandoned credential request can hold the local slot until expiry. Hard provider
+caps/revocation require a provider-side or trusted transport-control integration.
+[OpenAI credential limitations](https://developers.openai.com/api/reference/resources/realtime/subresources/client_secrets/methods/create),
+[Grok ephemeral credentials](https://docs.x.ai/developers/model-capabilities/audio/ephemeral-tokens)
+
+Seven narrow function names follow the existing Voice Edge proposal: portfolio
+counts, local run statuses, shared-plane response health, approved memory/project
+summaries, dispatch and approval. Shared-plane reads use its existing authenticated
+HTTP MCP endpoint; no raw task text, paths or machine bearer reaches the model.
+Dispatch and approval currently return `blocked`, `queued: false`, `approved: false`.
+They must connect to the existing durable managed intake before claiming otherwise.
+This browser broker does not run coding CLIs or install another task queue.
+
+Native recall uses the existing starlight-memory signed cloud-projection gateway,
+whose exporter and gateway verify the manifest and approved atom bytes. It requires
+an explicit numeric-loopback `/mcp` endpoint and separate server bearer through
+`STARLIGHT_VOICE_PROJECTION_MCP_URL` and `STARLIGHT_VOICE_PROJECTION_MCP_TOKEN`.
+The client checks gateway identity and projection policy/watermark, handles JSON or
+SSE, applies a two-second total read deadline, bounds summaries, rejects redirects
+and proxy settings, and deletes only its own MCP session. It never falls back to
+the canonical private memory backend. The gateway performs signature verification;
+the Voice client trusts this explicitly configured local service. Approved summaries
+are delivered as function output with no instruction authority. Raw audio, transcripts
+and tool arguments are not persisted by this path; provider retention remains governed
+by the chosen account and provider terms.
+
+For a later authorized start, install the lightweight `./sidecar[native]` extra,
+configure a server `XAI_API_KEY` or `OPENAI_API_KEY`, and run the existing dashboard
+command. The server loads its local environment only on explicit startup. The
+native path requires neither Pipecat nor local model/audio-device wheels. No RAM
+claim follows until a real browser/session is measured.
 
 ## Remaining work
 
-Bind the dialogue adapter to the component pipeline and a selected voice identity;
-replace reference metadata with typed, bounded read-tool results; implement and
-compare native conversation transports; verify authentication, interruption and
-receipt recovery. Obtain independent revision review before release and measure
+Bind the ElevenLabs dialogue adapter to the component pipeline and a selected voice
+identity; connect durable dispatch/approval, verified memory deployment and turn
+receipts; verify real provider authentication and audio interruption. Browser
+appearance, touch and keyboard behavior need inspection under an authorized runtime
+or preview. Compare native conversation and GPT Live delegation on matched tasks.
+Obtain independent revision review before release and measure
 first playable audio, session closure, provider cost and resource use under admitted
 runtime conditions. Keep this implementation distinct from a released daily driver.

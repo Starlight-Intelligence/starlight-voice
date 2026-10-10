@@ -1,6 +1,6 @@
 // Starlight Voice console — polls /status and renders live operator state.
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 function renderLoop(s = {}) {
@@ -20,7 +20,7 @@ function renderLanes(variants = []) {
       return `<li class="lane"><span><span class="name">${esc(v.label)}</span><br><span class="engine">${esc(
         v.engine
       )}</span>${hypo}</span>
-        <span class="pill ${ok ? "ok" : "blocked"}">${ok ? "key live" : "blocked"}</span></li>`;
+        <span class="pill ${ok ? "ok" : "blocked"}">${ok ? "key configured" : "key needed"}</span></li>`;
     })
     .join("");
 }
@@ -33,7 +33,7 @@ function renderAdapters(adapters = {}) {
 
 function renderLedger(runs = []) {
   if (!runs.length) {
-    $("ledger").innerHTML = `<li class="empty">No dispatches yet. Say "refactor the auth module" to start one.</li>`;
+    $("ledger").innerHTML = `<li class="empty">No recorded dispatches. Native voice dispatch awaits managed intake.</li>`;
     return;
   }
   $("ledger").innerHTML = runs
@@ -132,7 +132,7 @@ async function poll() {
     gw.textContent = `gateway: ${s.gateway ?? "unknown"}`;
     gw.className = `gateway ${up ? "up" : "down"}`;
     $("liveState").className = "live ok";
-    $("liveLabel").textContent = "live";
+    $("liveLabel").textContent = "Server connected";
     $("err").textContent = s.error || "";
     live = true;
   } catch (e) {

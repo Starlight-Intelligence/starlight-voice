@@ -21,6 +21,7 @@ What exists today:
 - cognition router for fast, deliberation, browser, CLI-agent, and control paths
 - browser automation adapter seam with safe dry-run mode
 - public landing site (`site/`) and a live operator console (`dashboard/`) sharing one design system
+- native Grok WebSocket and OpenAI WebRTC conversation paths with a local credential broker and scoped read tools; live audio remains unverified
 - benchmark smoke scripts and GitHub Actions CI
 - committed `Cargo.lock` for reproducible builds
 - first-principles spec at `docs/SPEC.md`
@@ -105,6 +106,13 @@ python dashboard/server.py
 # landing  -> http://127.0.0.1:8765/
 # console  -> http://127.0.0.1:8765/dashboard/cockpit.html
 ```
+
+For native browser voice, first install `python -m pip install -e "./sidecar[native]"`
+and configure a server `XAI_API_KEY` or `OPENAI_API_KEY`. Start the server only when
+you intend to run it; microphone capture begins with the console's Start button.
+The native path has no Pipecat or local model dependency. Approved memory recall
+requires the separately configured signed projection gateway. Dispatch/approval
+remain blocked, and real voice quality, interruption, latency and RAM need validation.
 
 To deploy just the landing site statically, publish the `site/` directory as-is.
 
