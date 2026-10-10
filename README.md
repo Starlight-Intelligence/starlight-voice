@@ -112,8 +112,11 @@ For native browser voice, first install `python -m pip install -e "./sidecar[nat
 and configure a server `XAI_API_KEY` or `OPENAI_API_KEY`. Start the server only when
 you intend to run it; microphone capture begins with the console's Start button.
 The native path has no Pipecat or local model dependency. Approved memory recall
-requires the separately configured signed projection gateway. Dispatch/approval
-remain blocked, and real voice quality, interruption, latency and RAM need validation.
+requires the separately configured signed projection gateway and its per-result
+`starlight.memory.projection-result.v1` metadata. Older unbound gateway responses
+are refused; gateway adoption and signed snapshot verification remain pending.
+Dispatch/approval remain blocked, and real voice quality, interruption, latency
+and RAM need validation.
 
 The native client can be imported without mounting controls. An embedding page can
 set a same-origin `brokerPrefix` and `workletPath`, then explicitly mount and dispose

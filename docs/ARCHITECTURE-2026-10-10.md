@@ -172,15 +172,33 @@ are delivered as function output with no instruction authority. Raw audio, trans
 and tool arguments are not persisted by this path; provider retention remains governed
 by the chosen account and provider terms.
 
-Recall now returns the validated lowercase SHA-256 projection watermark and approved
-policy observed before the request, with `observed_before_recall: true` and
-`recall_snapshot_verified: false`. Tool content cannot overwrite these fields.
-The existing gateway refreshes its projection for each tool request, so its earlier
-sync watermark cannot prove which snapshot produced a later recall. A gateway-owned
-atomic snapshot and per-result binding are still required for that proof; polling
-sync status again would not rule out an intervening A-to-B-to-A refresh. No extra
-RPC is added to this voice read. Queries must fit the gateway's 512 UTF-16 code-unit
-limit, including padding; malformed Unicode is rejected before spending a tool call.
+Recall now requires the gateway's per-result `_meta["starlight.memory.projection"]`
+binding with schema `starlight.memory.projection-result.v1`, lowercase 64-character
+projection/atom digests and an approved summary-only policy. The client validates
+that report and constructs its own bounded watermark. Tool content cannot replace
+those fields. Missing, malformed or unsupported bindings fail closed, including
+legacy replies that only offered an earlier sync watermark. The two typed recall
+tools return an unavailable result without a reference on denial.
+
+The status RPC before recall is removed. The reader makes one actual recall call
+after initialization, using the result's reported snapshot even when it differs
+from a previously observed status. This removes one network call; no end-to-end
+latency or RAM improvement has been measured. `observed_before_recall` is false
+and `result_binding_validated` is true for accepted metadata. The client keeps
+`recall_snapshot_verified` false because parsing reported digests does not verify
+manifest signatures, atom bytes or the deployed gateway's atomic snapshot loader.
+Gateway-owned signature verification and immutable per-result capture still need
+implementation/deployment acceptance; the owner candidate remains unapplied.
+Queries must fit the gateway's 512 UTF-16 code-unit limit, including padding;
+malformed Unicode is rejected before spending a tool call.
+
+Seventeen binding cases fail against the exact prior reader source: four valid
+result/policy/transport combinations were labelled with the earlier watermark,
+and thirteen missing/malformed bindings were accepted. The repaired reader and
+broker pass 113 focused checks with synthetic HTTP transports, including both
+typed recall tools, refusal without reference disclosure, JSON/SSE, forged top-level
+claims and owned-session cleanup. These tests start no HTTP gateway or provider;
+metadata shape validation is separate from signed-memory runtime acceptance.
 
 Both paths request MCP 2025-11-25 and accept the negotiated 2025-03-26,
 2025-06-18 or 2025-11-25 version, sending its header on subsequent requests even

@@ -219,24 +219,51 @@ def test_recall_accepts_the_actual_gateway_query_boundary(bridge, monkeypatch, q
     assert run(bridge.tool(call(session, name="sis_recall_projection", arguments={"query": query}), session["capability"])) == {"status": "ok"}
 
 
-def test_projection_delivers_watermark_as_reference_without_claiming_snapshot_binding(bridge, monkeypatch):
+@pytest.mark.parametrize("name", ["project_context", "sis_recall_projection"])
+@pytest.mark.parametrize("bound", [False, True])
+def test_projection_broker_delivers_only_bound_references_without_claiming_crypto_verification(bridge, monkeypatch, name, bound):
+    from starlight_voice.mcp_projection import LocalMcpReader
+
     monkeypatch.setenv("STARLIGHT_VOICE_PROJECTION_MCP_URL", "http://127.0.0.1:8787/mcp")
     monkeypatch.setenv("STARLIGHT_VOICE_PROJECTION_MCP_TOKEN", "private-bearer")
-    watermark = {"projection_id": "a" * 64, "policy": "public-summaries-only", "observed_before_recall": True, "recall_snapshot_verified": False}
+    requests = []
 
-    class Reader:
-        def __init__(self, endpoint, token):
-            assert endpoint == "http://127.0.0.1:8787/mcp" and token == "private-bearer"
+    def handler(request):
+        requests.append(request)
+        assert request.headers["Authorization"] == "Bearer private-bearer"
+        if request.method == "DELETE":
+            return httpx.Response(200)
+        body = json.loads(request.content)
+        if body["method"].startswith("notifications/"):
+            return httpx.Response(202)
+        if body["method"] == "initialize":
+            result = {"serverInfo": {"name": "starlight-memory-cloud"}, "protocolVersion": "2025-11-25"}
+        else:
+            assert body["params"] == {"name": "memory_recall", "arguments": {"query": "Project", "limit": 4}}
+            result = {"content": [{"type": "text", "text": "Approved reference"}]}
+            if bound:
+                result["_meta"] = {"starlight.memory.projection": {
+                    "schema": "starlight.memory.projection-result.v1", "projection_id": "b" * 64,
+                    "atoms_sha256": "c" * 64, "policy": "public-summaries-only",
+                }}
+        return httpx.Response(200, headers={"mcp-session-id": "owned-fixture-session"},
+                              json={"jsonrpc": "2.0", "id": body["id"], "result": result})
 
-        async def call(self, name, args, *, projection):
-            assert name == "memory_recall" and args == {"query": "Project", "limit": 4} and projection
-            return {"content": [{"type": "text", "text": "Approved reference"}], "projection_watermark": watermark}
-
-    monkeypatch.setattr("starlight_voice.native_bridge.LocalMcpReader", Reader)
+    monkeypatch.setattr("starlight_voice.native_bridge.LocalMcpReader", lambda endpoint, token: LocalMcpReader(
+        endpoint, token, transport=httpx.MockTransport(handler),
+    ))
     session = start(bridge)
-    result = run(bridge.tool(call(session, name="project_context", arguments={"query": "Project"}), session["capability"]))
-    assert result["projection_watermark"] == watermark
-    assert result["instruction_authority"] is False and result["reference"] == "Approved reference"
+    result = run(bridge.tool(call(session, name=name, arguments={"query": "Project"}), session["capability"]))
+    if bound:
+        assert result["projection_watermark"]["projection_id"] == "b" * 64
+        assert result["projection_watermark"]["atoms_sha256"] == "c" * 64
+        assert result["projection_watermark"]["result_binding_validated"] is True
+        assert result["projection_watermark"]["recall_snapshot_verified"] is False
+        assert result["instruction_authority"] is False and result["reference"] == "Approved reference"
+    else:
+        assert result["status"] == "unavailable"
+        assert "reference" not in result and "projection_watermark" not in result
+    assert requests[-1].method == "DELETE"
     assert "private-bearer" not in json.dumps(result)
 
 

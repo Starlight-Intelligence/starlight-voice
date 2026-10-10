@@ -54,7 +54,6 @@ class LocalMcpReader:
         session_id = None
         in_flight = None
         cancel_request = None
-        projection_watermark = None
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/json, text/event-stream", "Content-Type": "application/json",
@@ -129,29 +128,14 @@ class LocalMcpReader:
                     if projection and init.get("serverInfo", {}).get("name") != "starlight-memory-cloud":
                         raise ProjectionUnavailable("Recall requires the signed projection gateway")
                     await request("notifications/initialized", None, None)
-                    if projection:
-                        watermark = await request("tools/call", {"name": "memory_sync_status", "arguments": {}}, 2)
-                        status = json.loads(tool_text(watermark))
-                        if status.get("policy") not in {
-                            "public-summaries-only", "public-and-explicitly-enabled-private-shareable-summaries-only",
-                        }:
-                            raise ProjectionUnavailable("Memory projection policy is not approved")
-                        if not isinstance(status.get("projection_id"), str) or len(status["projection_id"]) != 64 or any(
-                            character not in "0123456789abcdef" for character in status["projection_id"]
-                        ):
-                            raise ProjectionUnavailable("Memory projection watermark is missing")
-                        # Sync status precedes recall; the gateway may refresh
-                        # between requests. This is not a per-result binding.
-                        projection_watermark = {"projection_id": status["projection_id"], "policy": status["policy"],
-                                                "observed_before_recall": True, "recall_snapshot_verified": False}
                     if name is None:
                         result = await request("ping", None, 3)
                         if result != {}:
                             raise ProjectionUnavailable("Invalid MCP ping result")
                         return result
                     result = await request("tools/call", {"name": name, "arguments": arguments}, 3)
-                    if projection_watermark is not None:
-                        return {**result, "projection_watermark": projection_watermark}
+                    if projection:
+                        return {**result, "projection_watermark": projection_result_binding(result)}
                     return result
             except asyncio.CancelledError:
                 cancel_request = in_flight
@@ -179,6 +163,26 @@ class LocalMcpReader:
                                 await client.delete(self.endpoint, headers=headers)
                     except Exception:
                         pass
+
+
+def projection_result_binding(result: dict) -> dict:
+    metadata = result.get("_meta")
+    binding = metadata.get("starlight.memory.projection") if isinstance(metadata, dict) else None
+    if not isinstance(binding, dict) or binding.get("schema") != "starlight.memory.projection-result.v1":
+        raise ProjectionUnavailable("Memory result has no supported snapshot binding")
+    for field in ("projection_id", "atoms_sha256"):
+        value = binding.get(field)
+        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            raise ProjectionUnavailable("Memory result snapshot digest is invalid")
+    if binding.get("policy") not in {
+        "public-summaries-only", "public-and-explicitly-enabled-private-shareable-summaries-only",
+    }:
+        raise ProjectionUnavailable("Memory result projection policy is not approved")
+    # Validate the gateway's per-result report, without claiming this client
+    # has verified its manifest signature or the deployed snapshot loader.
+    return {"projection_id": binding["projection_id"], "atoms_sha256": binding["atoms_sha256"],
+            "policy": binding["policy"], "binding_schema": binding["schema"], "observed_before_recall": False,
+            "result_binding_validated": True, "recall_snapshot_verified": False}
 
 
 def checked_result(message: dict, request_id: int) -> dict:
