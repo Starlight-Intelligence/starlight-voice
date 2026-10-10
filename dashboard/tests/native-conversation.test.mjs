@@ -5,6 +5,22 @@ import { NativeConversation, PcmPlayback, ToolBatch, TurnObservations, decodePcm
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
+test("default browser fetch keeps the global receiver for broker requests", async () => {
+  const original = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async function (path, options) {
+    assert.equal(this, globalThis, "browser fetch requires its global receiver");
+    requests.push({ path, options });
+    return { ok: true, json: async () => ({ ok: true }) };
+  };
+  try {
+    const conversation = new NativeConversation({ brokerPrefix: "/api/voice/native" });
+    await conversation.fetchFn(conversation.endpoint("capabilities"), { cache: "no-store" });
+    await conversation.post("/voice/session", { provider: "grok", voice: "ara" });
+    assert.deepEqual(requests.map(request => request.path), ["/api/voice/native/capabilities", "/api/voice/native/session"]);
+  } finally { globalThis.fetch = original; }
+});
+
 test("PCM handles clamping, signed little-endian and malformed chunks", () => {
   const samples = decodePcm16(pcm16Base64(new Float32Array([-2, -1, 0, 0.5, 1, 2])));
   assert.deepEqual([...samples].slice(0, 3), [-1, -1, 0]);

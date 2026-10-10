@@ -118,7 +118,7 @@ export class PcmPlayback {
 }
 
 export class NativeConversation {
-  constructor({ onState = () => {}, onText = () => {}, onMissionDraft = () => {}, fetchFn = globalThis.fetch, media = globalThis.navigator?.mediaDevices,
+  constructor({ onState = () => {}, onText = () => {}, onMissionDraft = () => {}, fetchFn = globalThis.fetch.bind(globalThis), media = globalThis.navigator?.mediaDevices,
     AudioContextClass = globalThis.AudioContext, WebSocketClass = globalThis.WebSocket, PeerClass = globalThis.RTCPeerConnection,
     WorkletClass = globalThis.AudioWorkletNode, audioFactory = () => new Audio(), brokerPrefix = "/voice",
     workletPath = "/dashboard/pcm-capture.js" } = {}) {
