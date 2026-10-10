@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -20,6 +21,20 @@ from pathlib import Path
 
 from .mcp_projection import LocalMcpReader, ProjectionUnavailable, local_mcp_endpoint, tool_text
 from .turn_observations import append_observation, recent_observations, validate_observation
+
+_MISSION_CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
+
+
+def _mission_text(value) -> bool:
+    if not isinstance(value, str) or len(value) > 900 or _MISSION_CONTROLS.search(value):
+        return False
+    try:
+        # Browser trim also removes a BOM; str.strip alone would admit a shorter draft.
+        trimmed = re.sub(r"^[\s\ufeff]+|[\s\ufeff]+$", "", value)
+        return len(trimmed.encode("utf-16-le")) // 2 >= 15 and len(value.encode("utf-16-le")) // 2 <= 900
+    except UnicodeEncodeError:
+        return False
+
 
 INSTRUCTIONS = (
     "You are Starlight Voice, a concise, warm operator companion. Speak naturally. "
@@ -221,7 +236,7 @@ class NativeBridge:
         needs_query = name in {"sis_recall_projection", "project_context", "dispatch_task", "request_approval"}
         if name == "prepare_mission":
             if set(args) != {"objective", "acceptance"} or any(
-                not isinstance(value, str) or not 15 <= len(value.strip()) <= 900 or len(value) > 900 or "\0" in value
+                not _mission_text(value)
                 for value in args.values()
             ):
                 raise BridgeError("A bounded objective and acceptance draft is required")

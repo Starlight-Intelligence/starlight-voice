@@ -257,3 +257,31 @@ def test_provider_errors_are_redacted_and_redirects_rejected(response, monkeypat
         run(mint_secret("grok", "ara", transport=httpx.MockTransport(handler)))
     assert len(requests) == 1
     assert "private" not in str(error.value) and error.value.status == 502
+
+
+@pytest.mark.parametrize("field", ["objective", "acceptance"])
+@pytest.mark.parametrize("text", [
+    *[f"Improve the existing voice {character} conversation" for character in
+      ["\x01", "\x1b", "\x7f", "\x85", "\u202e", "\u2067", "\ud800"]],
+    pytest.param("🚀" * 451, id="over-UTF16-limit"),
+    pytest.param("\ufeff" + "x" * 14, id="browser-trim-minimum"),
+])
+def test_mission_text_rejects_hidden_controls_and_invalid_unicode_before_tool_budget(bridge, field, text):
+    session = start(bridge)
+    args = {"objective": "Improve the existing voice conversation", "acceptance": "Verify cleanup and recovery"}
+    args[field] = text
+    with pytest.raises(BridgeError):
+        run(bridge.tool(call(session, name="prepare_mission", arguments=args), session["capability"]))
+    assert bridge.session.calls == {}
+
+
+@pytest.mark.parametrize("text", [
+    "Préparer les voix 🚀 et 👩‍💻\n\tVérifier les interruptions\r\net la reprise",
+    "تحسين المحادثة الصوتية والتحقق من الاستعادة",
+])
+def test_mission_text_preserves_legible_unicode_and_reviewed_line_breaks(bridge, text):
+    session = start(bridge)
+    result = run(bridge.tool(call(session, name="prepare_mission",
+                                 arguments={"objective": text, "acceptance": text}), session["capability"]))
+    assert result["draft"]["objective"] == text
+    assert result["draft"]["acceptance"] == text

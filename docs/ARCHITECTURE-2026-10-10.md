@@ -110,7 +110,13 @@ They must connect to the existing durable managed intake before claiming otherwi
 This browser broker does not run coding CLIs or install another task queue.
 
 `prepare_mission` accepts only a bounded objective and acceptance text (15–900
-characters each). It returns an opaque draft id with `queued: false` and
+characters each, measured as browser UTF-16 units). The broker and shared host
+validator reject C0/C1 controls except tab/line breaks, explicit bidi embeddings,
+overrides/isolates and unpaired surrogates. Ordinary Arabic, accents, emoji and
+joiners remain valid; text is rejected rather than silently stripped. Invalid
+draft fields fail before consuming the local tool budget. Command Center reuses
+the same validator with its existing 1600-unit edited-field limit before saving.
+It returns an opaque draft id with `queued: false` and
 `approved: false`; draft contents stay in session memory. The native host may
 display an editable draft, and Command Center lets the person choose product,
 role, source and budgets before explicitly saving through its existing mission

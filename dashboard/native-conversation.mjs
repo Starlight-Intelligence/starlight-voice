@@ -1,3 +1,9 @@
+// Keep the person's reviewed words; reject hidden formatting instead of stripping it.
+export function isMissionText(text, maxLength = 900) {
+  return typeof text === "string" && text.trim().length >= 15 && text.length <= maxLength &&
+    !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069\ud800-\udfff]/u.test(text);
+}
+
 // Native audio transports. No speechSynthesis, persistent tokens or automatic mic start.
 export function pcm16Base64(samples) {
   const bytes = new Uint8Array(samples.length * 2);
@@ -156,7 +162,7 @@ export class NativeConversation {
       output?.schema === "voice.mission-draft.v1" && output.status === "draft" && output.queued === false && output.approved === false &&
       draft && Object.keys(draft).sort().join() === "acceptance,id,objective" &&
       typeof draft.id === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(draft.id) &&
-      [draft.objective, draft.acceptance].every((text) => typeof text === "string" && text.trim().length >= 15 && text.length <= 900 && !text.includes("\0"))) {
+      [draft.objective, draft.acceptance].every((text) => isMissionText(text))) {
       this.onMissionDraft(Object.freeze({ id: draft.id, objective: draft.objective, acceptance: draft.acceptance }));
     }
     return output;

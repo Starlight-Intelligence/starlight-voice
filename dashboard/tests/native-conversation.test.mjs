@@ -471,3 +471,29 @@ test("an old tool batch cannot borrow a replacement conversation's session autho
   const output = await conversation.executeTool("call", "prepare_mission", {}, 1);
   assert.equal(output.status, "unavailable"); assert.equal(calls, 0);
 });
+
+
+test("hidden controls and unpaired surrogates in broker drafts never reach human review", async () => {
+  const offered = [], id = "507e8b48-bb41-48b0-a58b-263349b7fdcb";
+  let draft = { id, objective: "Improve the existing voice conversation", acceptance: "Verify microphone cleanup and recovery" };
+  const conversation = new NativeConversation({ onMissionDraft: value => offered.push(value),
+    fetchFn: async () => ({ ok: true, json: async () => ({
+      schema: "voice.mission-draft.v1", status: "draft", queued: false, approved: false, draft,
+    }) }),
+  });
+  conversation.active = true; conversation.session = { session_id: "session", capability: "cap" };
+  const original = { ...draft };
+  for (const field of ["objective", "acceptance"]) {
+    for (const bad of ["\x01", "\x1b", "\x7f", "\x85", "\u202e", "\u2067", "\ud800"]) {
+      draft = { ...original, [field]: "Improve the existing " + bad + " voice conversation" };
+      await conversation.executeTool("call", "prepare_mission", {}, conversation.epoch);
+    }
+  }
+  assert.equal(offered.length, 0);
+  for (const text of ["Préparer les voix 🚀 et 👩‍💻\n\tVérifier les interruptions\r\net la reprise",
+    "تحسين المحادثة الصوتية والتحقق من الاستعادة"]) {
+    draft = { ...original, objective: text, acceptance: text };
+    await conversation.executeTool("call", "prepare_mission", {}, conversation.epoch);
+    assert.deepEqual(offered.at(-1), draft);
+  }
+});
