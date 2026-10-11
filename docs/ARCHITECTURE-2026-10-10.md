@@ -475,9 +475,10 @@ ordinary Stop and joins when the existing server closes. A failed host shutdown
 keeps its owner and handles for another shutdown attempt.
 
 Tests separate pure authority/cleanup fixtures, browser transport fixtures and
-actual SDK peer negotiation. Hosted SDP/data-channel tests use deterministic
-services and local peers without provider inference, microphone or synthesized
-audio. They do not establish authentication, audible interruption, preferred
+actual SDK peer negotiation. Hosted tests use deterministic services and local
+peers to verify SDP, captions and generated marker PCM across the audio codec.
+They use no provider inference or audio device and do not establish
+authentication, audible interruption, preferred
 voice, cost, latency or RAM. No local app or voice session was started for this
 implementation. Independent revision review and an admitted live comparison
 remain release requirements.
