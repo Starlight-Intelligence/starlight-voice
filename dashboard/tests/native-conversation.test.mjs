@@ -114,12 +114,12 @@ test("a component reservation arriving after Stop retains failed cleanup ownersh
   assert.ok(fixture.requests.every(request => !request.path.endsWith("/component-offer")));
 });
 
-test("component discovery offers the configured account voice without starting capture", async () => {
+for (const label of [undefined, "Grok via OpenRouter"]) test(`component discovery offers the configured voice and ${label || "default label"} without starting capture`, async () => {
   const page = fakeVoiceDocument(); let captures = 0;
   const conversation = mountNativeConversation(page.doc, { lifecycleTarget: page.lifecycle,
     media: { getUserMedia: async () => { captures++; } },
     fetchFn: async () => ({ ok: true, json: async () => ({ providers: [
-      { id: "elevenlabs", configured: true, voices: ["account-voice-id"] },
+      { id: "elevenlabs", configured: true, voices: ["account-voice-id"], label },
     ] }) }),
   });
   try {
@@ -128,6 +128,7 @@ test("component discovery offers the configured account voice without starting c
     assert.equal(page.elements.voiceVoice.children[0].value, "account-voice-id");
     assert.equal(page.elements.voiceVoice.children[0].textContent, "Configured voice");
     assert.equal(page.elements.voiceStart.disabled, false);
+    assert.equal(page.elements.voiceProvider.children[0].textContent, label || "Speech component");
   } finally { await conversation.dispose(); }
 });
 

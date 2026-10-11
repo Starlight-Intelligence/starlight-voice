@@ -87,7 +87,8 @@ def test_request_and_fragmented_pcm_are_exact_and_response_is_closed(model):
             requests.append(request)
             return httpx.Response(200, headers={"Content-Type": "audio/pcm"}, stream=stream)
 
-        client = OpenRouterSpeech(api_key="test-inference-key", voice_id="george", model=model,
+        voice = "ara" if model == "x-ai/grok-voice-tts-1.0" else "george"
+        client = OpenRouterSpeech(api_key="test-inference-key", voice_id=voice, model=model,
                                   transport=httpx.MockTransport(handler))
         audio = [chunk async for chunk in client.stream(text("Hello", "."))]
         assert audio == [b"\x01\x00", b"\x02\x00"] and stream.closed
@@ -96,9 +97,10 @@ def test_request_and_fragmented_pcm_are_exact_and_response_is_closed(model):
         assert str(request.url) == "https://openrouter.ai/api/v1/audio/speech"
         assert request.headers["authorization"] == "Bearer test-inference-key"
         assert request.headers["accept-encoding"] == "identity"
-        assert json.loads(request.content) == {
-            "model": model, "input": "Hello.", "voice": "george", "response_format": "pcm",
-        }
+        expected = {"model": model, "input": "Hello.", "voice": voice, "response_format": "pcm"}
+        if model == "x-ai/grok-voice-tts-1.0":
+            expected["provider"] = {"options": {"xai": {"output_format": {"codec": "pcm", "sample_rate": 24000}}}}
+        assert json.loads(request.content) == expected
     asyncio.run(run())
 
 
@@ -121,6 +123,11 @@ def test_invalid_selection_is_rejected_during_construction(options):
     defaults = {"api_key": "test", "voice_id": "chosen", "model": "elevenlabs/eleven-v4-turbo"}
     with pytest.raises(ValueError):
         OpenRouterSpeech(**(defaults | options))
+
+
+def test_grok_rejects_an_elevenlabs_voice_before_http():
+    with pytest.raises(ValueError, match="supported Grok"):
+        OpenRouterSpeech(api_key="fixture", voice_id="george", model="x-ai/grok-voice-tts-1.0")
 
 
 @pytest.mark.parametrize("status,headers", [

@@ -277,6 +277,23 @@ class ComponentSessionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ComponentValidationTests(unittest.TestCase):
+    def test_grok_profile_needs_only_dedicated_key_and_advertises_its_actual_engine(self):
+        with patch.dict(os.environ, {"STARLIGHT_VOICE_PROFILE": "grok-openrouter",
+                                     "STARLIGHT_VOICE_OPENROUTER_API_KEY": "fixture"}, clear=True):
+            spec = component_spec(present=lambda name: name != "groq", sdk_ready=lambda: True)
+        self.assertTrue(spec["configured"])
+        self.assertEqual(spec["label"], "Grok via OpenRouter")
+        self.assertEqual(spec["voices"], ["ara"])
+        self.assertFalse(spec["runtime_verified"])
+
+    def test_broken_dedicated_key_or_unsupported_grok_voice_is_not_offered_as_ready(self):
+        for key, voice in (("", "ara"), ("*not found*", "ara"), ("fixture", "george")):
+            with patch.dict(os.environ, {"STARLIGHT_VOICE_PROFILE": "grok-openrouter",
+                                         "STARLIGHT_VOICE_OPENROUTER_API_KEY": key,
+                                         "OPENROUTER_API_KEY": "shared", "STARLIGHT_TTS_VOICE_ID": voice}, clear=True):
+                spec = component_spec(present=lambda name: True, sdk_ready=lambda: True)
+            self.assertFalse(spec["configured"])
+
     def test_browser_requires_an_sdk_with_public_detector_cleanup(self):
         keys = {key: "fixture" for key in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "ELEVENLABS_API_KEY")}
         with patch.dict(os.environ, keys, clear=True):

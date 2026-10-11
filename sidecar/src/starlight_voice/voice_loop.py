@@ -21,11 +21,15 @@ import sys
 
 from . import adapters
 from .cognition import CognitionRouter
-from .config import Settings
+from .config import Settings, openrouter_inference_key
 
 
 def _stt_service(settings: Settings):
     """Cloud STT. Default Groq Whisper (live GROQ_API_KEY)."""
+    if settings.stt_engine == "openrouter-transcription":
+        from .adapters.openrouter_transcription_pipecat import create_openrouter_transcription_stt
+
+        return create_openrouter_transcription_stt(api_key=openrouter_inference_key(), model=settings.stt_model)
     if settings.stt_engine != "groq-openrouter":
         raise adapters.VoiceDepsUnavailable(f"STT engine '{settings.stt_engine}' is not implemented in this graph")
     from pipecat.services.groq.stt import GroqSTTService
@@ -47,12 +51,22 @@ def _llm_service(settings: Settings):
     the voice tier must NOT egress transcripts to an arbitrary slow upstream on a near-miss.
     Fails LOUD at build if the pin didn't land — never ship the SLA feature as a silent no-op.
     """
+    api_key = openrouter_inference_key()
+    if not api_key:
+        raise adapters.VoiceDepsUnavailable("OpenRouter text needs a normal inference key")
+    if settings.llm_model.startswith("x-ai/") and settings.llm_fast_provider != "xai":
+        raise adapters.VoiceDepsUnavailable("Grok text requires the xai provider pin")
+    if settings.llm_reasoning_effort not in {"", "none", "low", "medium", "high", "xhigh"}:
+        raise adapters.VoiceDepsUnavailable("Select a supported explicit reasoning effort")
     from pipecat.services.openrouter.llm import OpenRouterLLMService
 
     provider = {"order": [settings.llm_fast_provider], "allow_fallbacks": False}
+    extra = {"provider": provider}
+    if settings.llm_reasoning_effort:
+        extra["reasoning"] = {"effort": settings.llm_reasoning_effort}
     svc = OpenRouterLLMService(
-        api_key=os.environ.get("OPENROUTER_API_KEY"),
-        settings=OpenRouterLLMService.Settings(model=settings.llm_model, extra={"provider": provider}),
+        api_key=api_key,
+        settings=OpenRouterLLMService.Settings(model=settings.llm_model, extra=extra),
     )
     landed = getattr(getattr(svc, "_settings", None), "extra", None) or {}
     if not landed.get("provider"):
@@ -70,7 +84,7 @@ def _tts_service(settings: Settings):
 
         if settings.tts_model not in OpenRouterSpeech.MODELS:
             raise adapters.VoiceDepsUnavailable("Select an explicit supported OpenRouter speech model")
-        api_key = os.environ.get("OPENROUTER_API_KEY", "")
+        api_key = openrouter_inference_key()
         if not api_key.strip() or api_key.strip() == "*not found*" or not settings.tts_voice_id.strip():
             raise adapters.VoiceDepsUnavailable(
                 "OpenRouter speech needs an inference OPENROUTER_API_KEY and explicit STARLIGHT_TTS_VOICE_ID"

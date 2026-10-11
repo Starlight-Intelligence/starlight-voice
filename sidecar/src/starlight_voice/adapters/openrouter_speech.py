@@ -21,7 +21,9 @@ class OpenRouterSpeech:
     SAMPLE_RATE = 24000
     MAX_CHARACTERS = 4096
     MAX_AUDIO_BYTES = 2 * 1024 * 1024
-    MODELS = frozenset({"elevenlabs/eleven-v4-turbo", "elevenlabs/eleven-v3-conversational"})
+    MODELS = frozenset({"elevenlabs/eleven-v4-turbo", "elevenlabs/eleven-v3-conversational",
+                        "x-ai/grok-voice-tts-1.0"})
+    GROK_VOICES = frozenset({"eve", "ara", "rex", "sal", "leo"})
 
     def __init__(self, *, api_key: str, voice_id: str, model: str, timeout_s: float = 30, transport=None):
         if not isinstance(api_key, str) or not api_key.strip() or api_key.strip() == "*not found*":
@@ -29,7 +31,9 @@ class OpenRouterSpeech:
         if not isinstance(voice_id, str) or not voice_id.strip() or len(voice_id) > 128:
             raise ValueError("An explicit OpenRouter voice name or ID is required")
         if model not in self.MODELS:
-            raise ValueError("Select a supported OpenRouter ElevenLabs dialogue model")
+            raise ValueError("Select a supported OpenRouter speech model")
+        if model == "x-ai/grok-voice-tts-1.0" and voice_id not in self.GROK_VOICES:
+            raise ValueError("Select an explicit supported Grok speech voice")
         if not math.isfinite(timeout_s) or not 0 < timeout_s <= 120:
             raise ValueError("Synthesis timeout must be between 0 and 120 seconds")
         self._api_key = api_key
@@ -60,6 +64,12 @@ class OpenRouterSpeech:
 
                 import httpx
 
+                body = {"model": self.model, "input": text, "voice": self.voice_id, "response_format": "pcm"}
+                if self.model == "x-ai/grok-voice-tts-1.0":
+                    body["provider"] = {"options": {"xai": {
+                        "output_format": {"codec": "pcm", "sample_rate": self.SAMPLE_RATE},
+                    }}}
+
                 async with httpx.AsyncClient(
                     trust_env=False, follow_redirects=False, timeout=min(self.timeout_s, 5),
                     transport=self._transport,
@@ -68,7 +78,7 @@ class OpenRouterSpeech:
                     async with client.stream(
                         "POST", "https://openrouter.ai/api/v1/audio/speech",
                         headers={"Authorization": f"Bearer {self._api_key}", "Accept-Encoding": "identity"},
-                        json={"model": self.model, "input": text, "voice": self.voice_id, "response_format": "pcm"},
+                        json=body,
                     ) as response:
                         if response.status_code != 200:
                             raise SpeechError("OpenRouter rejected speech synthesis")

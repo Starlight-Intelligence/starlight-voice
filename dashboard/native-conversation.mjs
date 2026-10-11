@@ -657,7 +657,7 @@ export function mountNativeConversation(doc = document, options = {}) {
     let choices = [];
     for (const spec of caps.providers) {
       const option = doc.createElement("option"); option.value = spec.id;
-      const label = spec.id === "grok" ? "Grok native voice" : spec.id === "elevenlabs" ? "ElevenLabs component" : "OpenAI WebRTC";
+      const label = spec.id === "grok" ? "Grok native voice" : spec.id === "elevenlabs" ? (spec.label || "Speech component") : "OpenAI WebRTC";
       option.textContent = label + (spec.configured ? "" : spec.id === "elevenlabs" ? " · setup needed" : " · key needed");
       option.disabled = !spec.configured; provider.append(option);
       if (spec.configured) choices.push(spec);
@@ -679,7 +679,7 @@ export function mountNativeConversation(doc = document, options = {}) {
     else {
       placeholder(provider, "No provider configured"); placeholder(voice, "Voice unavailable");
       status.textContent = "Configure XAI_API_KEY or OPENAI_API_KEY on the server to enable native voice";
-      if (caps.providers.some((spec) => spec.id === "elevenlabs")) status.textContent += ", or configure the ElevenLabs component runtime and account voice";
+      if (caps.providers.some((spec) => spec.id === "elevenlabs")) status.textContent += ", or configure the speech component runtime and voice";
     }
   } catch { if (!disposed) {
     configured = false;

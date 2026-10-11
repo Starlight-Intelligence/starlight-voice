@@ -145,6 +145,39 @@ To deploy just the landing site statically, publish the `site/` directory as-is.
 
 ## Configuration
 
+For the all-Grok OpenRouter component route, set
+`STARLIGHT_VOICE_PROFILE=grok-openrouter`. This selects Grok STT 1.0,
+`x-ai/grok-4.7` with low reasoning and an xAI provider pin, and Grok Voice TTS 1.0
+with Ara. Set `STARLIGHT_TTS_VOICE_ID=rex` for a male voice candidate; listen before
+claiming a preferred timbre. Explicit engine/model/voice environment settings still
+override the profile. `legacy-component` retains the Groq/Cerebras/ElevenLabs path.
+
+The profile accepts `STARLIGHT_VOICE_OPENROUTER_API_KEY` for every OpenRouter stage.
+That dedicated credential takes precedence over `OPENROUTER_API_KEY`; an empty or
+invalid dedicated value stops setup instead of falling back to a shared key.
+The management key is reserved for administration. Importing configuration never
+retrieves secrets, starts models or opens provider connections.
+
+To load only the dedicated credential from Infisical into the current PowerShell
+session, dot-source the existing setup helper:
+
+```powershell
+. ./scripts/load-openrouter-voice.ps1
+```
+
+It checks key metadata and configures the shell without starting the app, writing
+the bearer to disk or making inference requests. It does not load the management
+key. The dedicated instance key created on 11 October authenticates but has a $0
+cap, including BYOK, and expires on 18 October. Funding the account alone does not
+raise that cap; set an approved finite allowance before playback and replace an
+expired key through Infisical. Existing shared credentials were preserved.
+
+This chained route needs the optional component runtime and local voice detection.
+Native Grok remains the lighter direct xAI conversation path and requires
+`XAI_API_KEY`; an OpenRouter key cannot mint its realtime credential. The component
+route is configured and synthetically tested; audible quality, latency and RAM
+remain unverified. See the updated architecture comparison before enabling it.
+
 For the browser component route, install `python -m pip install -e "./sidecar[voice-browser]"`
 only under machine admission. Configure `GROQ_API_KEY`, an inference
 `OPENROUTER_API_KEY`, and `STARLIGHT_TTS_VOICE_ID`. Direct ElevenLabs synthesis

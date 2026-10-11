@@ -11,7 +11,8 @@ import secrets
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 
-from .config import Settings
+from .adapters.openrouter_speech import OpenRouterSpeech
+from .config import Settings, openrouter_inference_key
 from .native_bridge import BridgeError, NativeBridge
 
 _STARTUP_CLOSE_SECONDS = 2
@@ -35,21 +36,28 @@ def _browser_sdk_ready() -> bool:
 def component_spec(settings: Settings | None = None, *, present=_present, sdk_ready=_browser_sdk_ready) -> dict:
     settings = settings or Settings.from_env()
     valid_voice = bool(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", settings.tts_voice_id))
-    supported = settings.stt_engine == "groq-openrouter" and (
+    supported_stt = settings.stt_engine == "groq-openrouter" or (
+        settings.stt_engine == "openrouter-transcription" and settings.stt_model == "x-ai/grok-stt-1.0"
+    )
+    supported = supported_stt and (
         settings.tts_engine == "openrouter-speech"
-        and settings.tts_model in {"elevenlabs/eleven-v4-turbo", "elevenlabs/eleven-v3-conversational"}
+        and settings.tts_model in OpenRouterSpeech.MODELS
+        and (settings.tts_model != "x-ai/grok-voice-tts-1.0" or settings.tts_voice_id in OpenRouterSpeech.GROK_VOICES)
         or settings.tts_engine == "elevenlabs"
         and settings.tts_model in {"eleven_v4_turbo", "eleven_v3_conversational", "eleven_flash_v2_5",
                                   "eleven_flash_v2", "eleven_multilingual_v2"}
     )
-    keys = ["GROQ_API_KEY", "OPENROUTER_API_KEY"]
+    keys = ["GROQ_API_KEY"] if settings.stt_engine == "groq-openrouter" else []
     if settings.tts_engine == "elevenlabs":
         keys.append("ELEVENLABS_API_KEY")
-    configured = valid_voice and supported and all(
+    configured = valid_voice and supported and bool(openrouter_inference_key()) and all(
         bool(os.environ.get(key, "").strip()) and os.environ.get(key, "").strip() != "*not found*" for key in keys
-    ) and sdk_ready() and all(present(name) for name in ("pipecat", "aiortc", "onnxruntime", "groq", "openai",
-                                                       "websockets", "httpx"))
+    ) and sdk_ready() and all(present(name) for name in (
+        "pipecat", "aiortc", "onnxruntime", "openai", "websockets", "httpx",
+        *(("groq",) if settings.stt_engine == "groq-openrouter" else ()),
+    ))
     return {"id": "elevenlabs", "transport": "smallwebrtc", "model": settings.tts_model,
+            "label": "Grok via OpenRouter" if settings.tts_model == "x-ai/grok-voice-tts-1.0" else "Speech component",
             "voices": [settings.tts_voice_id] if valid_voice and supported else [],
             "configured": bool(configured), "runtime_verified": False,
             "tool_support": "read-only", "local_voice_detection": True}

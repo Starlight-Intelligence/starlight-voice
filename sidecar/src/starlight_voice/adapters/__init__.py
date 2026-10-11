@@ -52,6 +52,7 @@ _ENGINE_IMPORTS: dict[str, str] = {
     "deepgram": "deepgram",
     "openrouter": "openai",           # LLM via OpenRouter
     "openrouter-speech": "httpx",     # explicit REST PCM speech alternative
+    "openrouter-transcription": "httpx",  # bounded REST transcription; no local recognizer
     "kokoro": "kokoro_onnx",
     "cartesia": "cartesia",
     "elevenlabs": "websockets",       # ElevenLabs stream-input over raw websockets

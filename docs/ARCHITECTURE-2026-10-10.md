@@ -110,11 +110,62 @@ stream-arrival/audible latency, voice preference, billing and RAM measurements
 remain open. No account generation or device has been started. SDK checks cover
 both Pipecat 1.3 and 1.12 using fake synthesis, not provider audio.
 
-The discovered ordinary OpenRouter key currently fails GET authentication because
-its expiry exceeds the account's maximum lifetime. The separate management key
-authenticates for metadata and must stay outside inference. Approval for a short
-dedicated capped test key is pending. Credentials are not copied into this repo;
-Infisical's `*not found*` sentinel is rejected as a missing key.
+The shared `OPENROUTER_API_KEY` fails metadata authentication because its expiry
+exceeds the account maximum lifetime. On 11 October, Frank authorized a dedicated
+replacement for Voice. `STARLIGHT_VOICE_OPENROUTER_API_KEY` was created and stored
+in Infisical EU / Internal Tooling / dev / root; readback matched and GET `/key`
+returned HTTP 200 with normal inference role. Its cap is $0, includes BYOK, has no
+reset and expires on 18 October. No inference was requested or app started.
+Both original shared credentials were verified unchanged. Funding alone does not
+raise the dedicated cap. The management key remains outside the inference graph.
+Credentials are not copied into this repo; invalid dedicated values and Infisical's
+`*not found*` sentinel fail closed instead of selecting the shared key.
+
+### All-Grok OpenRouter profile
+
+The live 11 October catalogue lists `x-ai/grok-stt-1.0` for transcription,
+`x-ai/grok-voice-tts-1.0` for speech and `x-ai/grok-4.7` for text. The older Grok
+4.1 Fast model is absent from the current text catalogue. The
+`STARLIGHT_VOICE_PROFILE=grok-openrouter` profile selects those current models,
+low text reasoning, the `xai` text-provider pin with fallback disabled and Ara.
+Eve, Ara, Rex, Sal and Leo are the catalogue's supported synthesis voice IDs.
+Rex is a male audition candidate. Ara synthesis and Ara native realtime are
+different transports; a shared voice name does not prove matched listening quality.
+
+The existing component graph, read-only tools, broker admission and session cleanup
+are reused. Its stable `elevenlabs` component ID is retained for client protocol
+compatibility; discovery supplies the accurate "Grok via OpenRouter" label.
+The profile requires only one OpenRouter inference key, not Groq or ElevenLabs
+credentials. It is optional; native Grok still needs direct `XAI_API_KEY` for its
+documented realtime WebSocket. No documented OpenRouter transport was found for
+that native session. [OpenRouter Grok text](https://openrouter.ai/x-ai/grok-4.7),
+[Grok synthesis](https://openrouter.ai/x-ai/grok-voice-tts-1.0),
+[Grok transcription](https://openrouter.ai/x-ai/grok-stt-1.0)
+
+The new REST transcription adapter sends the SDK's segmented mono PCM16 WAV as
+base64 JSON to the fixed `/audio/transcriptions` endpoint. It checks the WAV header
+and available samples before egress, caps segments at 30 seconds and 1 MiB, JSON
+responses at 64 KiB and transcripts at 8,192 characters, rejects redirects,
+compression, wrong MIME and unsuccessful responses, and enforces a total deadline.
+Cancellation propagates and closes owned response/client resources. Silence yields
+no invented utterance. Provider failures are redacted fatal frames. No automatic
+retry or provider substitution occurs. The binding loads Pipecat only when selected.
+[Official transcription guide](https://openrouter.ai/docs/guides/overview/multimodal/stt)
+
+Grok synthesis reuses the bounded REST speech adapter, requires one of its explicit
+voice IDs and requests 24 kHz PCM using the documented provider options mechanism.
+The xAI output format is explicitly `pcm` at 24 kHz. Actual gateway passthrough,
+PCM interpretation, account access and audible playback still need live validation.
+[OpenRouter speech guide](https://openrouter.ai/docs/guides/overview/multimodal/tts),
+[xAI output formats](https://docs.x.ai/developers/model-capabilities/audio/text-to-speech)
+
+Grok 4.7 is selected for current general response/tool capability, not a measured
+voice-speed win. Grok 4.3 with no reasoning is a serious lower-cost conversation
+alternative; compare the same utterances, tool results, interruption recovery and
+first audible reply after funding. Native Grok avoids the segmented STT/text/TTS
+chain and local detector. Keep it as the direct low-overhead conversation choice.
+No connected service, model, listening evaluation or RAM measurement establishes
+a winner yet. The zero-cap key deliberately prevents paid acceptance runs now.
 
 ## Memory and readiness
 
@@ -452,7 +503,10 @@ tools and text-model usage can change the total. No invoice or live usage is pro
 
 | Route | Published unit price | What it covers |
 | --- | --- | --- |
-| Grok native conversation | $0.08 per provider-billed minute, plus $0.004 per text input | Native speech-to-speech; minute-metering semantics still need verification |
+| Grok native conversation | $0.08 per provider-billed minute, plus $0.004 per billable text item | `server_vad` bills session duration; push-to-talk bills sent and received audio |
+| OpenRouter Grok TTS 1.0 | $0.015 per 1,000 characters | Generated speech only |
+| OpenRouter Grok STT 1.0 | $0.0000277777777778 per input second | Segmented REST transcription |
+| OpenRouter Grok 4.7 | $2 input / $6 output per million tokens below the 200k tier boundary | Text responses and tool-result context; longer prompts use higher rates |
 | ElevenLabs v4 Turbo | $0.011 per 1,000 characters until October 12; regular $0.04 | Generated speech only |
 | ElevenLabs v3 Conversational or Flash/Turbo | $0.04 per 1,000 characters | Generated speech only |
 | ElevenLabs Scribe v2 Realtime | $0.39 per input hour | Streaming transcription only |
@@ -482,9 +536,11 @@ For an illustrative workload with 10,000 generated characters and 20 minutes of
 streaming transcription, v4 Turbo plus Scribe costs $0.24 during the promotion or
 $0.53 at the regular rate, before text inference, tools and account minimums.
 If Grok bills 20 minutes and 10 text inputs, its published rates give $1.64.
-That billed-minute quantity is an assumption: the inspected pricing page does
-not establish how connected time, silence or input/output speech map to minutes.
-Neither connected duration nor summed input/output audio proves the billed total.
+The updated [Grok speech model page](https://docs.x.ai/developers/models/speech-to-speech)
+specifies session-duration billing with `server_vad`, which this native client uses,
+and sent/received-audio billing for push-to-talk. It charges billable
+`conversation.item.create` text items; audio and function-output items are excluded.
+The 20-minute quantity remains an example, not an inspected account invoice.
 These are separate usage examples, not a matched quality or billing comparison.
 Confirm metering and actual account usage before estimating savings. Do not select
 the permanent provider on the short promotion or advertise a TTS-only total as the

@@ -7,7 +7,7 @@ import pytest
 
 from starlight_voice import adapters
 from starlight_voice.config import Settings
-from starlight_voice.voice_loop import _stt_service, _tts_service
+from starlight_voice.voice_loop import _llm_service, _stt_service, _tts_service
 
 
 @pytest.mark.parametrize("engine", ["deepgram", "faster-whisper", "unknown"])
@@ -73,3 +73,35 @@ def test_openrouter_speech_needs_inference_key_and_selected_voice(monkeypatch, k
 def test_openrouter_speech_does_not_translate_or_fallback_from_a_direct_model_id():
     with pytest.raises(adapters.VoiceDepsUnavailable, match="explicit supported"):
         _tts_service(Settings(tts_engine="openrouter-speech", tts_model="eleven_v4_turbo", tts_voice_id="george"))
+
+
+def test_grok_profile_uses_one_dedicated_key_for_all_three_stages(monkeypatch):
+    from starlight_voice.adapters import openrouter_speech_pipecat, openrouter_transcription_pipecat
+
+    monkeypatch.setenv("STARLIGHT_VOICE_PROFILE", "grok-openrouter")
+    monkeypatch.setenv("STARLIGHT_VOICE_OPENROUTER_API_KEY", "dedicated-fixture")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "broken-shared-fixture")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.setattr(openrouter_transcription_pipecat, "create_openrouter_transcription_stt", lambda **kw: kw)
+    monkeypatch.setattr(openrouter_speech_pipecat, "create_openrouter_speech_tts", lambda **kw: kw)
+
+    class ModelService:
+        Settings = SimpleNamespace
+
+        def __init__(self, *, api_key, settings):
+            self.api_key, self._settings = api_key, settings
+
+    monkeypatch.setitem(sys.modules, "pipecat.services.openrouter.llm", SimpleNamespace(OpenRouterLLMService=ModelService))
+    settings = Settings.from_env()
+    assert _stt_service(settings) == {"api_key": "dedicated-fixture", "model": "x-ai/grok-stt-1.0"}
+    assert _tts_service(settings) == {"api_key": "dedicated-fixture", "model": "x-ai/grok-voice-tts-1.0", "voice_id": "ara"}
+    model = _llm_service(settings)
+    assert model.api_key == "dedicated-fixture" and model._settings.model == "x-ai/grok-4.7"
+    assert model._settings.extra == {"provider": {"order": ["xai"], "allow_fallbacks": False}, "reasoning": {"effort": "low"}}
+
+
+def test_grok_cannot_retain_an_incompatible_cerebras_pin(monkeypatch):
+    monkeypatch.setenv("STARLIGHT_VOICE_OPENROUTER_API_KEY", "fixture")
+    with pytest.raises(adapters.VoiceDepsUnavailable, match="xai provider"):
+        _llm_service(Settings(llm_model="x-ai/grok-4.7"))
