@@ -118,6 +118,12 @@ are refused; gateway adoption and signed snapshot verification remain pending.
 Dispatch/approval remain blocked, and real voice quality, interruption, latency
 and RAM need validation.
 
+Grok interruption uses the browser's output-frame position and PCM sample counts
+to estimate each queued content part's played duration. Graph lead time and gaps
+between chunks are excluded. A missing output clock stops the session with a
+recoverable reconnect message. Buffer and metadata limits bound local retention;
+these checks do not establish audible latency or measured RAM.
+
 The text CLI's `dispatch` command also builds previews only. Its legacy direct
 CLI launch path has been removed. `dispatch --live` reports `unavailable` and
 exits with code 2; always-ask requests remain `hard-blocked`. No harness starts

@@ -294,12 +294,13 @@ for (const change of ["interruption", "replacement response", "replacement sessi
 function fakeContext() {
   const sources = [];
   return { currentTime: 0, destination: {}, sources,
+    getOutputTimestamp() { return { contextTime: this.currentTime, performanceTime: 1 }; },
     createBuffer: (_, count, rate) => ({ duration: count / rate, copyToChannel() {} }),
     createBufferSource() { const source = { connect() {}, disconnect() { this.disconnected = true; }, start(time) { this.startTime = time; }, stop() { this.stopped = true; } }; sources.push(source); return source; },
   };
 }
 
-test("interruption clears all buffered sources and reports only audio heard", () => {
+test("interruption clears all buffered sources and bounds the played-audio estimate", () => {
   const context = fakeContext(), player = new PcmPlayback(context);
   const chunk = pcm16Base64(new Float32Array(480));
   player.enqueue(chunk, "item-a"); player.enqueue(chunk, "item-a");
@@ -317,6 +318,153 @@ test("playback backlog is bounded", () => {
   player.nextTime = 3.1;
   assert.throws(() => player.enqueue(pcm16Base64(new Float32Array(480)), "item"), /fell behind/);
 });
+
+test("barge-in uses device position when graph processing runs ahead", () => {
+  const context = fakeContext(), player = new PcmPlayback(context);
+  player.enqueue(pcm16Base64(new Float32Array(4800)), "item");
+  context.currentTime = 0.115;
+  context.getOutputTimestamp = () => ({ contextTime: 0.065, performanceTime: 1 });
+  const result = player.interrupt();
+  assert.equal(result.heardMs, 50);
+  assert.deepEqual(result.truncations, [{ itemId: "item", contentIndex: 0, audioEndMs: 50 }]);
+});
+
+test("barge-in excludes network gaps from provider audio duration", () => {
+  const context = fakeContext(), player = new PcmPlayback(context);
+  const chunk = pcm16Base64(new Float32Array(480));
+  player.enqueue(chunk, "item");
+  context.currentTime = 0.2;
+  player.enqueue(chunk, "item");
+  context.currentTime = 0.225;
+  assert.equal(player.interrupt().heardMs, 20);
+});
+
+test("barge-in accounts for every queued item and content index", () => {
+  const context = fakeContext(), player = new PcmPlayback(context);
+  const chunk = pcm16Base64(new Float32Array(4800));
+  player.enqueue(chunk, "first", 1); player.enqueue(chunk, "second", 2);
+  context.currentTime = 0.2;
+  context.getOutputTimestamp = () => ({ contextTime: 0.065, performanceTime: 1 });
+  assert.deepEqual(player.interrupt().truncations, [
+    { itemId: "first", contentIndex: 1, audioEndMs: 50 },
+    { itemId: "second", contentIndex: 2, audioEndMs: 0 },
+  ]);
+});
+
+for (const clock of [undefined, () => { throw new Error("device unavailable"); },
+  () => ({ contextTime: NaN, performanceTime: 1 }), () => ({ contextTime: 10, performanceTime: 1 }),
+  () => ({ contextTime: -1, performanceTime: 1 }), () => ({ contextTime: 0, performanceTime: Infinity })]) {
+  test(`invalid output clock never fabricates a played duration: ${String(clock)}`, () => {
+    const context = fakeContext(), player = new PcmPlayback(context);
+    player.enqueue(pcm16Base64(new Float32Array(4800)), "item");
+    context.getOutputTimestamp = clock; context.currentTime = 0.1;
+    const result = player.interrupt();
+    assert.equal(result.heardMs, null);
+    assert.equal(result.timingUnavailable, true);
+    assert.deepEqual(result.truncations, []);
+    assert.ok(context.sources.every((source) => source.stopped && source.disconnected));
+  });
+}
+
+test("tiny chunks cannot bypass the playback node limit", () => {
+  const context = fakeContext(), player = new PcmPlayback(context);
+  const chunk = pcm16Base64(new Float32Array(1));
+  for (let index = 0; index < 256; index++) player.enqueue(chunk, "item");
+  assert.throws(() => player.enqueue(chunk, "item"), /buffer limit/);
+  assert.equal(context.sources.length, 256);
+  player.interrupt();
+});
+
+test("output accounting stays bounded while retaining a long item's PCM offset", () => {
+  const context = fakeContext(), player = new PcmPlayback(context);
+  const chunk = pcm16Base64(new Float32Array(480));
+  for (let index = 0; index < 500; index++) {
+    player.enqueue(chunk, "item");
+    context.currentTime = player.nextTime;
+    context.sources.at(-1).onended();
+  }
+  assert.equal(player.interrupt().heardMs, 5000);
+});
+
+test("ended chunks cannot accumulate unbounded timing segments behind a stalled device", () => {
+  const context = fakeContext(), player = new PcmPlayback(context);
+  const chunk = pcm16Base64(new Float32Array(1));
+  for (let index = 0; index < 256; index++) {
+    player.enqueue(chunk, "item"); context.sources.at(-1).onended();
+  }
+  assert.throws(() => player.enqueue(chunk, "item"), /buffer limit/);
+  assert.equal(context.sources.length, 256);
+});
+
+test("completed content metadata has a finite session limit and clears on interruption", () => {
+  const context = fakeContext(), player = new PcmPlayback(context);
+  const chunk = pcm16Base64(new Float32Array(480));
+  for (let index = 0; index < 128; index++) {
+    player.enqueue(chunk, `item-${index}`); context.currentTime = player.nextTime;
+    context.sources.at(-1).onended();
+  }
+  assert.throws(() => player.enqueue(chunk, "extra-item"), /buffer limit/);
+  assert.equal(context.sources.length, 128);
+  const result = player.interrupt();
+  assert.equal(result.truncations.length, 1);
+  player.enqueue(chunk, "new-item");
+});
+
+test("a backwards device clock leaves the playback offset unknown", () => {
+  const context = fakeContext(), player = new PcmPlayback(context);
+  context.currentTime = 0.2;
+  player.enqueue(pcm16Base64(new Float32Array(480)), "item");
+  context.getOutputTimestamp = () => ({ contextTime: 0.1, performanceTime: 1 });
+  const result = player.interrupt();
+  assert.equal(result.timingUnavailable, true);
+  assert.equal(result.heardMs, null);
+  assert.deepEqual(result.truncations, []);
+});
+
+test("returning to a prior content part preserves its earlier PCM offset", () => {
+  const context = fakeContext(), player = new PcmPlayback(context);
+  const chunk = pcm16Base64(new Float32Array(480));
+  for (const item of ["first", "second", "first"]) {
+    player.enqueue(chunk, item); context.currentTime = player.nextTime;
+    context.sources.at(-1).onended();
+  }
+  assert.deepEqual(player.interrupt().truncations, [{ itemId: "first", contentIndex: 0, audioEndMs: 20 }]);
+});
+
+for (const [itemId, contentIndex] of [[null, 0], ["", 0], ["x".repeat(129), 0], ["item", -1], ["item", true], ["item", 16]]) {
+  test(`malformed audio content is refused before creating a source: ${String(itemId).slice(0, 10)}/${contentIndex}`, () => {
+    const context = fakeContext(), player = new PcmPlayback(context);
+    assert.throws(() => player.enqueue(pcm16Base64(new Float32Array(480)), itemId, contentIndex), /identity/);
+    assert.equal(context.sources.length, 0);
+  });
+}
+
+test("completed node disconnect failures remain owned until cleanup retries", () => {
+  const context = fakeContext(), player = new PcmPlayback(context);
+  player.enqueue(pcm16Base64(new Float32Array(480)), "item");
+  const source = context.sources[0];
+  source.disconnect = () => { throw new Error("device cleanup failed"); };
+  assert.doesNotThrow(() => source.onended());
+  assert.equal(player.nodes.size, 1);
+  source.disconnect = () => { source.disconnected = true; };
+  player.interrupt();
+  assert.equal(player.nodes.size, 0); assert.equal(source.disconnected, true);
+});
+
+for (const failure of ["connect", "start"]) {
+  test(`a source ${failure} failure stays owned for Stop`, () => {
+    const context = fakeContext(), makeSource = context.createBufferSource;
+    context.createBufferSource = () => {
+      const source = makeSource.call(context);
+      source[failure] = () => { throw new Error("device failure"); };
+      return source;
+    };
+    const player = new PcmPlayback(context);
+    assert.throws(() => player.enqueue(pcm16Base64(new Float32Array(480)), "item"), /device failure/);
+    player.interrupt();
+    assert.ok(context.sources.every((source) => source.stopped && source.disconnected));
+  });
+}
 
 test("permission arriving after Stop cannot open a broker session", async () => {
   const permission = deferred(); let stopped = 0, fetches = 0;
@@ -367,12 +515,55 @@ test("barge-in discards late PCM and cancels/truncates the response", () => {
   conversation.active = true; conversation.responding = true;
   conversation.session = { provider: "grok" };
   conversation.channel = { readyState: 1, bufferedAmount: 0, send: (event) => sent.push(JSON.parse(event)) };
-  conversation.playback = { interrupt: () => ({ itemId: "item", heardMs: 123 }), enqueue: () => queued++ };
+  conversation.playback = { interrupt: () => ({ truncations: [{ itemId: "item", contentIndex: 0, audioEndMs: 123 }] }), enqueue: () => queued++ };
   conversation.event({ type: "input_audio_buffer.speech_started" });
   conversation.event({ type: "response.output_audio.delta", delta: "invalid" });
   assert.equal(queued, 0);
-  assert.deepEqual(sent.map((event) => event.type), ["response.cancel", "conversation.item.truncate"]);
-  assert.equal(sent[1].audio_end_ms, 123);
+  assert.deepEqual(sent.map((event) => event.type), ["conversation.item.truncate"]);
+  assert.equal(sent[0].audio_end_ms, 123);
+});
+
+test("barge-in transmits each queued content's audio offset", () => {
+  const sent = [], context = fakeContext();
+  const conversation = new NativeConversation();
+  conversation.active = true; conversation.responding = true; conversation.session = { provider: "grok" };
+  conversation.channel = { readyState: 1, bufferedAmount: 0, send: (event) => sent.push(JSON.parse(event)) };
+  conversation.playback = new PcmPlayback(context);
+  const delta = pcm16Base64(new Float32Array(4800));
+  conversation.event({ type: "response.output_audio.delta", item_id: "first", content_index: 1, delta });
+  conversation.event({ type: "response.output_audio.delta", item_id: "second", content_index: 2, delta });
+  context.currentTime = 0.1;
+  context.getOutputTimestamp = () => ({ contextTime: 0.065, performanceTime: 1 });
+  conversation.event({ type: "input_audio_buffer.speech_started" });
+  assert.deepEqual(sent.filter((event) => event.type === "conversation.item.truncate"), [
+    { type: "conversation.item.truncate", item_id: "first", content_index: 1, audio_end_ms: 50 },
+    { type: "conversation.item.truncate", item_id: "second", content_index: 2, audio_end_ms: 0 },
+  ]);
+});
+
+test("unknown playback position cancels audio and requests a recoverable reconnect", async () => {
+  const sent = [], states = [], context = fakeContext();
+  context.close = async () => {}; context.getOutputTimestamp = undefined;
+  const conversation = new NativeConversation({ onState: (state) => states.push(state), fetchFn: async () => ({ ok: true, json: async () => ({ ok: true }) }) });
+  conversation.active = true; conversation.responding = true; conversation.context = context;
+  conversation.session = { provider: "grok", session_id: "session", capability: "capability" };
+  conversation.channel = { readyState: 1, bufferedAmount: 0, send: (event) => sent.push(JSON.parse(event)), close() {} };
+  conversation.playback = new PcmPlayback(context);
+  conversation.playback.enqueue(pcm16Base64(new Float32Array(480)), "item");
+  conversation.event({ type: "input_audio_buffer.speech_started" });
+  await conversation.stopPromise;
+  assert.equal(conversation.active, false);
+  assert.equal(sent.filter((event) => event.type === "conversation.item.truncate").length, 0);
+  assert.ok(context.sources.every((source) => source.stopped && source.disconnected));
+  assert.match(states.at(-1).label, /reconnect/i);
+});
+
+test("Grok server-VAD interruption does not issue a redundant manual cancellation", () => {
+  const sent = [], conversation = new NativeConversation();
+  conversation.active = true; conversation.responding = true; conversation.session = { provider: "grok" };
+  conversation.channel = { readyState: 1, bufferedAmount: 0, send: (event) => sent.push(JSON.parse(event)) };
+  conversation.event({ type: "input_audio_buffer.speech_started" });
+  assert.equal(sent.filter((event) => event.type === "response.cancel").length, 0);
 });
 
 test("upload backlog terminates submission instead of accumulating audio", () => {

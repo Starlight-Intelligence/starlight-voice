@@ -100,9 +100,48 @@ export class ToolBatch {
 export class PcmPlayback {
   constructor(context, rate = 48000) {
     this.context = context; this.rate = rate; this.nodes = new Set();
-    this.nextTime = 0; this.firstStart = null; this.itemId = null;
+    this.nextTime = 0; this.itemId = null;
+    this.contents = new Map(); this.currentContent = null; this.lastOutputTime = null;
   }
-  enqueue(encoded, itemId) {
+  outputPosition() {
+    // currentTime describes graph processing, not the device's output frame.
+    // Never extrapolate a missing clock into speech the person may not have heard.
+    try {
+      const timestamp = this.context.getOutputTimestamp();
+      const position = timestamp.contextTime;
+      if (!Number.isFinite(position) || position < 0 || !Number.isFinite(this.context.currentTime) || position > this.context.currentTime ||
+          !Number.isFinite(timestamp.performanceTime) || timestamp.performanceTime < 0 ||
+          (this.lastOutputTime !== null && position < this.lastOutputTime)) return null;
+      this.lastOutputTime = position;
+      return position;
+    } catch { return null; }
+  }
+  advance(position) {
+    if (position === null) return;
+    for (const content of this.contents.values()) {
+      while (content.segments.length && content.segments[0].end <= position + 1e-9) {
+        content.playedFrames += content.segments.shift().frames;
+      }
+    }
+  }
+  playedFrames(content, position) {
+    let frames = content.playedFrames;
+    for (const segment of content.segments) {
+      frames += Math.min(segment.frames, Math.max(0, Math.floor((position - segment.start) * this.rate + 1e-7)));
+    }
+    return Math.min(content.totalFrames, frames);
+  }
+  enqueue(encoded, itemId, contentIndex = 0) {
+    if (typeof itemId !== "string" || !itemId.length || itemId.length > 128 ||
+        !Number.isInteger(contentIndex) || contentIndex < 0 || contentIndex > 15) {
+      throw new Error("Invalid audio content identity");
+    }
+    this.advance(this.outputPosition());
+    const key = JSON.stringify([itemId, contentIndex]);
+    if (this.nodes.size >= 256 || [...this.contents.values()].reduce((count, content) => count + content.segments.length, 0) >= 256 ||
+        (!this.contents.has(key) && this.contents.size >= 128)) {
+      throw new Error("Audio playback buffer limit reached; reconnect to recover");
+    }
     const samples = decodePcm16(encoded);
     if (this.nextTime - this.context.currentTime + samples.length / this.rate > 3) {
       throw new Error("Audio playback fell behind; reconnect to recover");
@@ -110,30 +149,49 @@ export class PcmPlayback {
     const buffer = this.context.createBuffer(1, samples.length, this.rate);
     buffer.copyToChannel(samples, 0);
     const source = this.context.createBufferSource();
+    // Own the node before connect/start so a failure remains available to Stop.
+    this.nodes.add(source);
     source.buffer = buffer;
     source.connect(this.context.destination);
-    if (itemId && itemId !== this.itemId) {
-      this.itemId = itemId; this.firstStart = null;
-    }
+    this.itemId = itemId;
     const start = Math.max(this.context.currentTime + 0.015, this.nextTime);
-    this.firstStart ??= start;
     this.nextTime = start + buffer.duration;
-    this.nodes.add(source);
-    source.onended = () => { this.nodes.delete(source); source.disconnect(); };
+    source.onended = () => {
+      try { source.disconnect(); this.nodes.delete(source); }
+      catch { /* Keep the completed node owned for Stop's cleanup retry. */ }
+    };
     source.start(start);
+    const content = this.contents.get(key) || { itemId, contentIndex, totalFrames: 0, playedFrames: 0, segments: [] };
+    content.segments.push({ start, end: this.nextTime, frames: samples.length });
+    content.totalFrames += samples.length;
+    this.contents.set(key, content); this.currentContent = key;
     return Math.max(0, (start - this.context.currentTime) * 1000);
   }
   interrupt() {
-    const heardMs = this.firstStart === null ? 0 : Math.max(0, Math.floor((Math.min(this.context.currentTime, this.nextTime) - this.firstStart) * 1000));
+    const position = this.outputPosition(), truncations = [];
+    const timingUnavailable = this.contents.size > 0 && position === null;
+    let heardMs = this.contents.size ? null : 0;
+    if (!timingUnavailable) {
+      this.advance(position);
+      for (const [key, content] of this.contents) {
+        const frames = this.playedFrames(content, position);
+        const audioEndMs = Math.floor(frames * 1000 / this.rate);
+        if (key === this.currentContent) heardMs = audioEndMs;
+        if (frames < content.totalFrames || key === this.currentContent) {
+          truncations.push({ itemId: content.itemId, contentIndex: content.contentIndex, audioEndMs });
+        }
+      }
+    }
     const itemId = this.itemId;
     for (const node of this.nodes) {
       node.onended = null;
       try { node.stop(); } catch { /* already ended */ }
       try { node.disconnect(); this.nodes.delete(node); } catch { /* retained for cleanup retry */ }
     }
-    this.nextTime = 0; this.firstStart = null; this.itemId = null;
+    this.nextTime = 0; this.itemId = null;
+    this.contents.clear(); this.currentContent = null;
     if (this.nodes.size) throw new Error(CLEANUP_REQUIRED);
-    return { itemId, heardMs };
+    return { itemId, heardMs, truncations, timingUnavailable };
   }
 }
 
@@ -334,15 +392,21 @@ export class NativeConversation {
         this.observations?.interrupt();
         if (this.session?.provider === "grok") {
           this.blockAudio = true;
-          if (this.responding) this.send({ type: "response.cancel" });
-          const { itemId, heardMs } = this.playback?.interrupt() || {};
-          if (itemId) this.send({ type: "conversation.item.truncate", item_id: itemId, content_index: 0, audio_end_ms: heardMs });
+          // The configured server VAD cancels generation itself. A second
+          // manual cancellation can arrive after the response is already gone.
+          const { truncations, timingUnavailable } = this.playback?.interrupt() || {};
+          if (timingUnavailable) {
+            this.stop("Voice playback could not be synchronized. Reconnect to continue.", true);
+            return;
+          }
+          for (const content of truncations || []) this.send({ type: "conversation.item.truncate",
+            item_id: content.itemId, content_index: content.contentIndex, audio_end_ms: content.audioEndMs });
         }
         this.state("Listening"); break;
       }
       case "response.output_audio.delta": case "response.audio.delta":
         if (!this.blockAudio && this.playback) {
-          const delayMs = this.playback.enqueue(event.delta, event.item_id);
+          const delayMs = this.playback.enqueue(event.delta, event.item_id, event.content_index ?? 0);
           this.observations?.scheduled(delayMs);
         }
         break;

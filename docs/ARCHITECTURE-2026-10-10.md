@@ -303,6 +303,29 @@ claim follows until a real browser/session is measured.
 
 ## Turn observations
 
+Grok's PCM interruption accounting uses `AudioContext.getOutputTimestamp()` for
+the browser's output-frame position, rather than the processing graph's
+`currentTime`. Per-content sample counts exclude gaps between chunks. A queued
+content part that has not reached the output position is truncated at zero;
+each pending item/content pair gets its own offset. Fully rendered timing
+segments collapse into a frame counter, preserving offsets across gaps or
+interleaved content. The browser retains at most 256 source nodes, 256 pending
+timing segments and 128 content counters, in addition to the existing three-second
+graph scheduling horizon. Limits are checked before allocating another source.
+Completed-node disconnect failures remain owned for cleanup retry.
+
+The [Web Audio output timestamp contract](https://www.w3.org/TR/webaudio/#dom-audiocontext-getoutputtimestamp)
+distinguishes the device frame from graph processing. That timestamp is still a
+browser estimate, not a microphone loopback or proof that a person heard sound.
+Missing, throwing, nonfinite, future or backwards output clocks produce no
+invented playback offset: audio is cleared and the session offers reconnect.
+No polling worker or local model was added. The configured Grok server VAD
+cancels generation itself, so barge-in sends content truncation without a
+redundant manual cancellation, following the
+[provider event contract](https://docs.x.ai/developers/rest-api-reference/inference/voice).
+Device delay, truncation acceptance, voice quality and runtime RAM remain live
+validation gates. These offsets are not promoted into verified turn receipts.
+
 The browser submits enum/count/timing metadata to the same-origin, capability-gated
 `/voice/observation` route. The local append-only file lives beside the existing run
 ledger in ignored `memory/voice/`, with at most 100 records per session and a 32 MiB
