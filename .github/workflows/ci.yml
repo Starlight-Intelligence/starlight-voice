@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
       # Core SDK only: no provider extras, audio device, local models or credentials.
       - run: python -m pip install -e "./sidecar[dev]" "pipecat-ai==${{ matrix.pipecat }}" "websockets>=15" "httpx>=0.27"
-      - run: python -m pytest sidecar/tests/test_eleven_dialogue_pipecat.py sidecar/tests/test_openrouter_speech_pipecat.py sidecar/tests/test_component_tools_pipecat.py -q
+      - run: python -m pytest sidecar/tests/test_eleven_dialogue_pipecat.py sidecar/tests/test_openrouter_speech_pipecat.py sidecar/tests/test_component_tools_pipecat.py sidecar/tests/test_component_turns_pipecat.py -q
   browser-unit:
     runs-on: ubuntu-latest
     steps:

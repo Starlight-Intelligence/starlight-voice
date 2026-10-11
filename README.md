@@ -144,6 +144,14 @@ To deploy just the landing site statically, publish the `site/` directory as-is.
 
 ## Configuration
 
+The standalone local component conversation needs speech boundaries for Groq's
+segmented transcription. Install its optional `voice-vad` extra together with
+`voice` and `providers` before an authorized microphone run. The graph binds
+Silero voice detection to the user aggregator; headless graph assembly and native
+browser voice do not load it. The existing shell does not supply push-to-talk
+events to this graph. Voice detection quality, interruption and its RAM footprint
+still need device verification. No model or audio session starts during discovery.
+
 The component graph exposes five read tools through the existing native broker:
 portfolio status, recent receipts, node health, approved memory recall and project
 context. Tool results enter the conversation as untrusted reference data. A local

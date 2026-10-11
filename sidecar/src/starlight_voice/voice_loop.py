@@ -2,7 +2,8 @@
 
 Cloud-first per the 2026-06-15 decision: mic -> Groq STT -> OpenRouter LLM -> ElevenLabs TTS
 -> speakers, orchestrated by Pipecat entirely inside this Python sidecar. The Rust/Tauri
-shell only owns PTT + tray + lifecycle; audio never crosses the stdio IPC boundary.
+shell owns tray + lifecycle; audio never crosses the stdio IPC boundary. The local
+component conversation needs explicit voice detection to segment Groq transcription.
 
 The `CognitionRouter` rides the graph as a FrameProcessor (observes tier on each final
 transcript) — it classifies, it does NOT call the LLM or pick the engine (that stays in
@@ -125,11 +126,25 @@ def _router_processor():
     return RouterProcessor()
 
 
+def _live_vad_analyzer():
+    """Load voice detection only for an explicitly started local component session."""
+    try:
+        from pipecat.audio.vad.silero import SileroVADAnalyzer
+    except ImportError:
+        raise adapters.VoiceDepsUnavailable(
+            "Component microphone conversation needs optional Silero voice detection. "
+            "Install: uv pip install -e .[voice,voice-vad,providers]. "
+            "Native browser conversation does not need this extra."
+        ) from None
+    return SileroVADAnalyzer()
+
+
 def build_graph(settings: Settings | None = None, *, with_transport: bool):
     """Assemble the Pipecat pipeline.
 
     with_transport=False builds the service chain only (no mic/speaker) so the graph can be
-    validated headlessly. with_transport=True opens the local audio device for a live run.
+    validated headlessly. with_transport=True binds local audio and optional Silero VAD.
+    Groq's segmented STT requires VAD events; graph assembly alone is insufficient.
     Returns (pipeline, transport_or_None).
     """
     settings = settings or Settings.from_env()
@@ -140,10 +155,14 @@ def build_graph(settings: Settings | None = None, *, with_transport: bool):
 
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.processors.aggregators.llm_context import LLMContext
-    from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+    from pipecat.processors.aggregators.llm_response_universal import (
+        LLMContextAggregatorPair,
+        LLMUserAggregatorParams,
+    )
 
     from .component_tools import READ_INSTRUCTIONS, bind_component_tools
 
+    vad = _live_vad_analyzer() if with_transport else None
     stt = _stt_service(settings)
     llm = _llm_service(settings)
     tts = _tts_service(settings)
@@ -156,7 +175,7 @@ def build_graph(settings: Settings | None = None, *, with_transport: bool):
             "content": READ_INSTRUCTIONS,
         }], tools=tools,
     )
-    pair = LLMContextAggregatorPair(context)
+    pair = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(vad_analyzer=vad))
 
     transport = None
     head: list = []
