@@ -62,9 +62,7 @@ class ComponentReadTools:
                 self.bridge.stop({"session_id": scope["session_id"]}, scope["capability"])
             except BridgeError:
                 # Expired scopes still release all in-memory local authority.
-                with self.bridge.lock:
-                    if self.bridge.session and self.bridge.session.session_id == scope["session_id"]:
-                        self.bridge.session = None
+                self.bridge.release_read_scope(scope)
         await self.interrupt()
 
     async def handle(self, params):

@@ -122,6 +122,8 @@ class Session:
     voice: str = ""
     allowed_tools: frozenset[str] | None = None
     runtime_owned: bool = False
+    pending_reads: set[asyncio.Task] = field(default_factory=set, repr=False)
+    reads_revoked: bool = False
 
 
 async def mint_secret(provider: str, voice: str, *, transport=None) -> dict:
@@ -174,14 +176,61 @@ class NativeBridge:
         self.minting = False
         self.last_start = float("-inf")
 
+    @staticmethod
+    def _cancel_owned_read(task: asyncio.Task) -> None:
+        # Run on the task's loop, including when Stop arrives on an HTTP thread.
+        # Do not inject a second cancellation into an MCP cleanup already running.
+        if not task.done() and not task.cancelling():
+            task.cancel()
+
+    def _revoke_reads_locked(self, session: Session) -> None:
+        if session.reads_revoked:
+            return
+        session.reads_revoked = True
+        for task in session.pending_reads:
+            try:
+                task.get_loop().call_soon_threadsafe(self._cancel_owned_read, task)
+            except RuntimeError:
+                # A closed loop owns its completed shutdown; never cancel other work.
+                pass
+
+    def _require_read_owner_locked(self, session: Session, payload: dict, capability: str, name: str) -> None:
+        current = self.authorize(payload, capability)
+        if current is not session:
+            raise BridgeError("Voice read ownership changed", 401)
+        if current.allowed_tools is not None and name not in current.allowed_tools:
+            raise BridgeError("Tool is outside this read scope", 403)
+
+    async def _owned_read(self, session: Session, payload: dict, capability: str, name: str, args: dict) -> dict:
+        # An eager task factory must not execute a read while tool() holds the
+        # broker lock. Recheck ownership after the task is registered, before IO.
+        await asyncio.sleep(0)
+        with self.lock:
+            self._require_read_owner_locked(session, payload, capability, name)
+        return await self._read(name, args)
+
     def open_read_scope(self, *, runtime_owned: bool = False) -> dict:
         """Internal component-graph authority; no audio credential or HTTP start route."""
         with self.lock:
             if self.minting or (self.session and (self.session.expires > self.clock() or self.session.runtime_owned)):
                 raise BridgeError("A read scope is already active", 429)
+            if self.session:
+                self._revoke_reads_locked(self.session)
             self.session = Session(str(uuid.uuid4()), secrets.token_urlsafe(32), self.clock() + 300,
                                    allowed_tools=READ_ONLY_TOOL_NAMES, runtime_owned=runtime_owned)
             return {"session_id": self.session.session_id, "capability": self.session.capability}
+
+    def release_read_scope(self, scope: dict) -> None:
+        """Internal cleanup for an expired component scope; never release a replacement."""
+        with self.lock:
+            session = self.session
+            if not session or scope.get("session_id") != session.session_id:
+                return
+            if (session.runtime_owned or session.allowed_tools != READ_ONLY_TOOL_NAMES
+                    or not secrets.compare_digest(scope.get("capability", ""), session.capability)):
+                raise BridgeError("Component read ownership changed", 409)
+            self._revoke_reads_locked(session)
+            self.session = None
 
     def release_runtime_scope(self, scope: dict) -> None:
         """Internal owner release, only after physical runtime cleanup succeeds."""
@@ -191,6 +240,7 @@ class NativeBridge:
                     or scope.get("session_id") != session.session_id
                     or not secrets.compare_digest(scope.get("capability", ""), session.capability)):
                 raise BridgeError("Component runtime ownership changed; cleanup remains held", 409)
+            self._revoke_reads_locked(session)
             self.session = None
 
     def capabilities(self) -> dict:
@@ -215,6 +265,8 @@ class NativeBridge:
             now = self.clock()
             if self.minting or (self.session and (self.session.expires > now or self.session.runtime_owned)) or now - self.last_start < 60:
                 raise BridgeError("A session is active or the 60-second start cooldown has not elapsed", 429)
+            if self.session:
+                self._revoke_reads_locked(self.session)
             self.minting, self.last_start = True, now
         try:
             secret = await self.mint(provider, voice)
@@ -235,7 +287,7 @@ class NativeBridge:
     def authorize(self, payload: dict, capability: str) -> Session:
         session = self.session
         if (
-            not session or session.expires <= self.clock() or payload.get("session_id") != session.session_id
+            not session or session.reads_revoked or session.expires <= self.clock() or payload.get("session_id") != session.session_id
             or not isinstance(capability, str) or not capability.isascii() or len(capability) > 128
             or not secrets.compare_digest(session.capability, capability)
         ):
@@ -247,6 +299,7 @@ class NativeBridge:
             session = self.authorize(payload, capability)
             if session.runtime_owned:
                 raise BridgeError("Component runtime must finish its own cleanup before releasing authority", 409)
+            self._revoke_reads_locked(session)
             self.session = None
         return {"ok": True, "provider_connection_revoked": False}
 
@@ -310,6 +363,7 @@ class NativeBridge:
                 raise BridgeError("Query exceeds the gateway's 512 UTF-16 unit limit")
         elif args:
             raise BridgeError("This tool accepts no arguments")
+        args = dict(args)  # Every permitted value is a validated immutable string.
         fingerprint = hashlib.sha256(json.dumps({"name": name, "arguments": args}, sort_keys=True,
                                                 separators=(",", ":")).encode()).hexdigest()
         with self.lock:
@@ -327,15 +381,35 @@ class NativeBridge:
             session.calls[call_id] = None
             session.call_names[call_id] = name
             session.call_fingerprints[call_id] = fingerprint
+            remaining_lifetime = session.expires - self.clock()
+            read_task = asyncio.create_task(self._owned_read(session, payload, capability, name, args),
+                                            name="starlight-voice-scoped-read")
+            session.pending_reads.add(read_task)
+        lifetime = asyncio.timeout(remaining_lifetime)
         try:
-            result = await self._read(name, args)
+            async with lifetime:
+                result = await read_task
+                if asyncio.current_task().cancelling():
+                    raise asyncio.CancelledError  # A transport cannot swallow caller interruption.
         except asyncio.CancelledError:
             with self.lock:
                 session.calls[call_id] = {"status": "unavailable", "reason": "Scoped read was cancelled"}
-            raise
+            if asyncio.current_task().cancelling():
+                raise  # Preserve SDK caller interruption and its cancelled tool entry.
+            result = {"status": "unavailable", "reason": "Scoped read was cancelled"}
         except Exception:
             result = {"status": "unavailable", "reason": "Scoped tool read failed; no broader access was attempted"}
+        finally:
+            with self.lock:
+                session.pending_reads.discard(read_task)
         with self.lock:
+            if lifetime.expired():
+                self._revoke_reads_locked(session)
+            try:
+                self._require_read_owner_locked(session, payload, capability, name)
+            except BridgeError:
+                session.calls[call_id] = {"status": "unavailable", "reason": "Read authority ended; result discarded"}
+                raise
             session.calls[call_id] = result
         return result
 

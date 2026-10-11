@@ -1,11 +1,214 @@
 import asyncio
 import json
+import threading
 import time
 
 import httpx
 import pytest
 
 from starlight_voice.native_bridge import BridgeError, NativeBridge, mint_secret
+
+
+@pytest.mark.parametrize("action", ["stop", "expire", "replace", "runtime-release"])
+def test_scoped_read_discards_results_after_its_authority_ends(action, monkeypatch):
+    async def exercise():
+        now = [0.0]
+        bridge = NativeBridge(clock=lambda: now[0])
+        scope = bridge.open_read_scope(runtime_owned=action == "runtime-release")
+        owned = bridge.session
+        began, finish = asyncio.Event(), asyncio.Event()
+
+        async def late_read(name, arguments):
+            began.set()
+            try:
+                await finish.wait()
+            except asyncio.CancelledError:
+                pass  # Deliberately simulate a transport that suppresses cancellation.
+            return {"status": "ok", "reference": "old-scope reference must not publish"}
+
+        monkeypatch.setattr(bridge, "_read", late_read)
+        operation = asyncio.create_task(bridge.tool(call(scope, name="project_context", arguments={"query": "Project"}), scope["capability"]))
+        try:
+            await began.wait()
+            if action == "stop":
+                bridge.stop(scope, scope["capability"])
+            elif action == "runtime-release":
+                bridge.release_runtime_scope(scope)
+            else:
+                now[0] = 301.0
+                if action == "replace":
+                    replacement = bridge.open_read_scope()
+            finish.set()
+            with pytest.raises(BridgeError) as error:
+                await operation
+            assert error.value.status == 401
+            assert "old-scope" not in str(error.value)
+            assert owned.calls["call-1"]["status"] == "unavailable"
+            assert not owned.pending_reads
+            if action == "replace":
+                assert bridge.session.session_id == replacement["session_id"]
+                assert bridge.session.remaining_calls == 20
+        finally:
+            operation.cancel()
+            await asyncio.gather(operation, return_exceptions=True)
+
+    asyncio.run(exercise(), debug=True)
+
+
+def test_scoped_read_stop_from_another_thread_cancels_only_its_owned_read(monkeypatch):
+    async def exercise():
+        bridge = NativeBridge()
+        scope = bridge.open_read_scope()
+        owned = bridge.session
+        began, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def read(name, arguments):
+            began.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        monkeypatch.setattr(bridge, "_read", read)
+        unrelated = asyncio.create_task(asyncio.sleep(10))
+        operation = asyncio.create_task(bridge.tool(call(scope, name="node_health", arguments={}), scope["capability"]))
+        try:
+            await began.wait()
+            closer = threading.Thread(target=lambda: bridge.stop(scope, scope["capability"]))
+            closer.start()
+            closer.join(timeout=1)
+            assert not closer.is_alive()
+            await asyncio.wait_for(cancelled.wait(), timeout=0.3)
+            with pytest.raises(BridgeError) as error:
+                await operation
+            assert error.value.status == 401
+            assert not unrelated.done() and not owned.pending_reads
+        finally:
+            operation.cancel()
+            unrelated.cancel()
+            await asyncio.gather(operation, unrelated, return_exceptions=True)
+
+    asyncio.run(exercise(), debug=True)
+
+
+def test_scoped_read_lifetime_expiry_cancels_an_async_read(monkeypatch):
+    async def exercise():
+        bridge = NativeBridge()
+        scope = bridge.open_read_scope()
+        owned = bridge.session
+        owned.expires = bridge.clock() + 0.05
+        cancelled = asyncio.Event()
+
+        async def read(name, arguments):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        monkeypatch.setattr(bridge, "_read", read)
+        with pytest.raises(BridgeError) as error:
+            await asyncio.wait_for(bridge.tool(call(scope, name="node_health", arguments={}), scope["capability"]), timeout=0.5)
+        assert error.value.status == 401
+        assert cancelled.is_set() and not owned.pending_reads
+
+    asyncio.run(exercise(), debug=True)
+
+
+def test_scoped_read_preserves_caller_cancellation_when_transport_suppresses_it(monkeypatch):
+    async def exercise():
+        bridge = NativeBridge()
+        scope = bridge.open_read_scope()
+        began = asyncio.Event()
+
+        async def read(name, arguments):
+            began.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                return {"status": "ok", "reference": "Interrupted reference"}
+
+        monkeypatch.setattr(bridge, "_read", read)
+        operation = asyncio.create_task(bridge.tool(call(scope, name="node_health", arguments={}), scope["capability"]))
+        await began.wait()
+        operation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+        assert bridge.session.calls["call-1"]["status"] == "unavailable"
+        assert not bridge.session.pending_reads and not bridge.session.reads_revoked
+        assert bridge.authorize(scope, scope["capability"]) is bridge.session
+
+    asyncio.run(exercise(), debug=True)
+
+
+def test_scoped_read_queued_after_stop_never_starts_io(monkeypatch):
+    async def exercise():
+        bridge = NativeBridge()
+        scope = bridge.open_read_scope()
+        reads = []
+
+        async def read(name, arguments):
+            reads.append(name)
+            return {"status": "ok"}
+
+        monkeypatch.setattr(bridge, "_read", read)
+        operation = asyncio.create_task(bridge.tool(call(scope, name="node_health", arguments={}), scope["capability"]))
+        await asyncio.sleep(0)  # The outer call has claimed its id; its read is queued.
+        bridge.stop(scope, scope["capability"])
+        with pytest.raises(BridgeError):
+            await operation
+        assert reads == []
+
+    asyncio.run(exercise(), debug=True)
+
+
+def test_scoped_read_keeps_accepted_arguments_when_the_caller_mutates_its_dict(monkeypatch):
+    async def exercise():
+        bridge = NativeBridge()
+        scope = bridge.open_read_scope()
+        began, finish = asyncio.Event(), asyncio.Event()
+        args = {"query": "Accepted project"}
+
+        async def read(name, arguments):
+            began.set()
+            await finish.wait()
+            return {"status": "ok", "reference": arguments["query"]}
+
+        monkeypatch.setattr(bridge, "_read", read)
+        operation = asyncio.create_task(bridge.tool(call(scope, name="project_context", arguments=args), scope["capability"]))
+        await began.wait()
+        args["query"] = "Different project"
+        finish.set()
+        assert (await operation)["reference"] == "Accepted project"
+        with pytest.raises(BridgeError) as error:
+            await bridge.tool(call(scope, name="project_context", arguments=args), scope["capability"])
+        assert error.value.status == 409
+
+    asyncio.run(exercise(), debug=True)
+
+
+def test_scoped_read_with_eager_task_factory_releases_lock_before_reading(monkeypatch):
+    async def exercise():
+        bridge = NativeBridge()
+        scope = bridge.open_read_scope()
+
+        async def read(name, arguments):
+            with bridge.lock:
+                assert len(bridge.session.pending_reads) == 1
+            return {"status": "ok"}
+
+        monkeypatch.setattr(bridge, "_read", read)
+        loop = asyncio.get_running_loop()
+        previous = loop.get_task_factory()
+        loop.set_task_factory(asyncio.eager_task_factory)
+        try:
+            assert (await bridge.tool(call(scope, name="node_health", arguments={}), scope["capability"]))["status"] == "ok"
+            assert not bridge.session.pending_reads
+        finally:
+            loop.set_task_factory(previous)
+
+    asyncio.run(exercise(), debug=True)
 
 
 def run(coro):

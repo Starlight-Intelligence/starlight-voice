@@ -133,7 +133,8 @@ def test_sdk_executor_delivers_scoped_result_only_as_tool_context(mode):
 
 
 @pytest.mark.parametrize("action", ["interrupt", "cancel"])
-def test_sdk_lifecycle_cancels_pending_reads_without_late_reference(action):
+@pytest.mark.parametrize("suppress_transport_cancellation", [False, True])
+def test_sdk_lifecycle_cancels_pending_reads_without_late_reference(action, suppress_transport_cancellation):
     async def run():
         entered, cancelled = asyncio.Event(), asyncio.Event()
 
@@ -147,6 +148,10 @@ def test_sdk_lifecycle_cancels_pending_reads_without_late_reference(action):
                 entered.set()
                 try:
                     await asyncio.Future()
+                except asyncio.CancelledError:
+                    if suppress_transport_cancellation:
+                        return {"status": "ok", "reference": "Interrupted reference must not publish"}
+                    raise
                 finally:
                     cancelled.set()
 

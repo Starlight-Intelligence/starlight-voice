@@ -226,6 +226,34 @@ arguments are added to persisted turn observations. This prevents a reused id
 from presenting an old project summary or mission draft as the answer to a new
 request. Session authorization and expiry are still checked before replay.
 
+### Read lifetime and late-result refusal
+
+Each asynchronous broker read belongs to its accepted Session object. The broker
+copies validated arguments before starting the task, rechecks authority before IO,
+and checks the same owner again before caching or returning a result. Stop and
+scope release revoke authority and schedule cancellation on each owned task's loop,
+including when the request arrives on another HTTP thread. Replacing an expired
+scope cancels its reads without affecting the new scope or other application tasks.
+An expired component Stop uses the same revocation path; stale cleanup cannot
+release a replacement session. Runtime-owned scopes retain their existing media
+cleanup reservation rules.
+
+The read's remaining scope lifetime also bounds its asynchronous wait. If a
+transport suppresses cancellation and returns a late result, the broker refuses
+that result. An SDK caller's cancellation still propagates so Pipecat can mark
+the tool entry cancelled and continue on the next turn. These are cooperative
+coroutine boundaries. Synchronous ledger and bearer-file reads can still block
+the loop; this change establishes no hard disk, audible latency or RAM guarantee.
+Existing MCP exchange and teardown bounds remain in force.
+
+The previous browser-only suppression checked late tool results at the client,
+while a broker read could continue and return after its authority ended. Broker
+ownership now closes that server-side gap as well. Six regression cases reproduced
+the old behavior before repair. Headless tests cover cross-thread Stop, expiry,
+scope replacement, queued reads, caller argument mutation and eager task factories.
+Actual Pipecat SDK continuation remains a hosted gate; live account and device
+acceptance remain separate. No provider connection or billing revocation is claimed.
+
 `prepare_mission` accepts only a bounded objective and acceptance text (15–900
 characters each, measured as browser UTF-16 units). The broker and shared host
 validator reject C0/C1 controls except tab/line breaks, explicit bidi embeddings,

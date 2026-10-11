@@ -232,12 +232,64 @@ def test_interruption_or_stop_cancels_pending_read_and_never_delivers_a_late_res
         task = asyncio.create_task(tools.handle(parameters(results)))
         await entered.wait()
         await getattr(tools, action)()
-        await task
+        # Preserve the SDK's cancelled entry even if the transport returns late.
+        with pytest.raises(asyncio.CancelledError):
+            await task
         assert cancelled == [True] and results == [] and not tools.pending
         if action == "interrupt":
             assert bridge.session is not None
             await tools.stop()
         assert bridge.session is None
+    asyncio.run(run())
+
+
+def test_expired_component_stop_cancels_broker_owned_read():
+    async def run():
+        now, entered, cancelled = [0], asyncio.Event(), asyncio.Event()
+
+        class Pending(Reader):
+            async def _read(self, name, args):
+                entered.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    cancelled.set()
+
+        bridge = Pending(clock=lambda: now[0])
+        tools = ComponentReadTools(bridge=bridge)
+        tools.start()
+        scope, owned = dict(tools.scope), bridge.session
+        task = asyncio.create_task(bridge.tool({
+            "session_id": scope["session_id"], "call_id": "direct-read",
+            "name": "project_context", "arguments": {"query": "Project summary"},
+        }, scope["capability"]))
+        try:
+            await entered.wait()
+            now[0] = 301
+            await tools.stop()
+            with pytest.raises(BridgeError) as error:
+                await asyncio.wait_for(task, timeout=0.3)
+            assert error.value.status == 401
+            assert cancelled.is_set() and owned.reads_revoked and not owned.pending_reads
+            assert bridge.session is None
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    asyncio.run(run())
+
+
+def test_expired_component_cleanup_preserves_replacement_scope():
+    async def run():
+        now = [0]
+        bridge = Reader(clock=lambda: now[0])
+        tools = ComponentReadTools(bridge=bridge)
+        tools.start()
+        now[0] = 301
+        replacement = bridge.open_read_scope()
+        await tools.stop()
+        assert bridge.session.session_id == replacement["session_id"]
+        assert bridge.session.remaining_calls == 20 and not bridge.session.reads_revoked
+        bridge.stop(replacement, replacement["capability"])
     asyncio.run(run())
 
 

@@ -2,9 +2,9 @@
 
 Open-source reference implementation of a Jarvis-grade personal voice operator.
 
-Starlight Voice is the extracted voice runtime for the Starlight ecosystem: a Tauri tray shell plus a planned Python sidecar for push-to-talk capture, low-latency STT/LLM/TTS, and MCP-driven tool access.
+Starlight Voice is the extracted voice runtime for the Starlight ecosystem, with a Tauri tray scaffold, a Python broker and optional Pipecat conversation graph, and native browser voice with scoped MCP reads. Live voice quality, latency and RAM acceptance remain pending.
 
-## Current State
+## Current state
 
 The [10 October architecture assessment](docs/ARCHITECTURE-2026-10-10.md) records
 current source boundaries, provider research, offline fixes and remaining runtime
@@ -15,7 +15,7 @@ This repo is **portable but not finished**.
 What exists today:
 
 - Rust/Tauri tray application scaffold
-- Python sidecar scaffold with text-mode CLI
+- Python sidecar with text-mode CLI, native credential broker and optional component conversation graph
 - JSON-lines IPC for `health`, `utterance`, and `browser.task`
 - machine doctor for installed tools and readiness
 - cognition router for fast, deliberation, browser, CLI-agent, and control paths
@@ -34,8 +34,8 @@ What exists today:
 What is still pending:
 
 - push-to-talk hotkey behavior
-- STT/LLM/TTS voice loop
-- MCP server/client wiring
+- live end-to-end STT/LLM/TTS acceptance on the configured accounts and audio device
+- deployed signed memory projection and live recall acceptance; scoped MCP client wiring is implemented
 - live browser automation sandbox
 - signed installer
 - legacy SIS/Arcanea task migration scripts
@@ -178,6 +178,11 @@ context. Tool results enter the conversation as untrusted reference data. A loca
 read scope lasts five minutes and allows 20 calls; interruption cancels pending
 reads, and Stop releases the scope. The graph does not draft, dispatch or approve
 work. Memory recall still requires a gateway with accepted result-binding metadata.
+
+The broker owns each asynchronous read within its accepted scope. Stop, expiry and
+scope replacement cancel those reads; authorization is checked before IO and again
+before publishing a result. Late results from transports that suppress cancellation
+are discarded. Existing synchronous ledger reads still have no wall-clock guarantee.
 
 The component comparison graph has an explicit OpenRouter REST speech option:
 set `STARLIGHT_TTS_ENGINE=openrouter-speech`, choose
