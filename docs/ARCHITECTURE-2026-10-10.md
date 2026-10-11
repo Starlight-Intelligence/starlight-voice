@@ -431,6 +431,57 @@ no voice ID or preference is inferred. Vendor TTS latency figures exclude captur
 turn detection, retrieval, text inference, network and playback. The matched live
 comparison remains necessary before selecting a quality/latency winner.
 
+## Browser component ownership
+
+The dashboard adds an optional `elevenlabs` component choice, using the configured
+Groq/OpenRouter/ElevenLabs graph. `voice-browser` installs Pipecat's WebRTC extra,
+including aiortc and codec/OpenCV dependencies, plus its core ONNX runtime. It
+does not install PyAudio, a local text model or a new daemon. Browser audio travels
+to the existing server; local Silero detects turns there, then cloud services
+transcribe, generate text and synthesize speech. Native Grok/OpenAI is the serious
+alternative with fewer server audio dependencies. Session RAM remains unmeasured.
+
+The browser component requires Pipecat 1.12 or newer. Its public detector cleanup
+releases the analysis executor; 1.3's analyzer cleanup is a no-op. Compatibility
+tests on 1.3 use a deterministic marker detector and do not establish the older
+runtime's resource suitability. See the pinned
+[1.12 VAD controller](https://github.com/pipecat-ai/pipecat/blob/v1.12.0/src/pipecat/audio/vad/vad_controller.py)
+and [analyzer](https://github.com/pipecat-ai/pipecat/blob/v1.12.0/src/pipecat/audio/vad/vad_analyzer.py).
+
+Capability discovery checks package/configuration presence without importing the
+SDK or starting media. `/voice/session` reserves the existing broker's five-minute,
+20-call read scope. `/voice/component-offer` accepts one audio SDP offer, at most
+one application channel, 48 KiB of ASCII SDP and 64 candidates. The same-origin
+guard and four-request limit apply. SDP stays in memory, with only its hash used
+for duplicate-offer identity. Secrets stay on the server; the browser gets the
+scope capability and SDP answer. No external STUN/TURN service is configured, so
+this transport is intended for the existing local connection.
+
+The server creates one owned async loop only on a configured Start. Requests
+submit work to that persistent loop; returning an HTTP response does not cancel
+the pipeline. Graph startup is bounded to ten seconds. The client gathers ICE
+for at most eight seconds and allows 25 seconds for component connection readiness.
+The negotiated `pipecat` channel sends heartbeat messages and bounded reply
+captions. Mute and Stop retain the existing controls and recovery behavior.
+Component turns do not write native-provider observation receipts.
+
+The same read capability and call budget enter the graph. Generic native Stop
+cannot release a component reservation. Component Stop first revokes reads,
+cancels owned startup, then closes pipeline and peer with independent cleanup
+jobs. Failure holds the reservation and retained handles for Retry cleanup.
+Expiry also retries cleanup; it cannot silently admit a replacement native
+session while component resources remain. The async host loop persists after
+ordinary Stop and joins when the existing server closes. A failed host shutdown
+keeps its owner and handles for another shutdown attempt.
+
+Tests separate pure authority/cleanup fixtures, browser transport fixtures and
+actual SDK peer negotiation. Hosted SDP/data-channel tests use deterministic
+services and local peers without provider inference, microphone or synthesized
+audio. They do not establish authentication, audible interruption, preferred
+voice, cost, latency or RAM. No local app or voice session was started for this
+implementation. Independent revision review and an admitted live comparison
+remain release requirements.
+
 ## Remaining work
 
 The standalone Groq/OpenRouter/ElevenLabs graph now binds optional Silero voice
@@ -444,8 +495,9 @@ The SDK regression checks marker
 PCM through actual VAD control, segmented STT and user-context aggregation using
 deterministic services, with no model, provider or audio device. It establishes
 frame wiring, not Silero accuracy, audible interruption, live latency or RAM.
-The browser ElevenLabs transport remains separate unfinished work; this repair
-does not expose the local component graph in Command Center.
+The standalone browser component transport now connects this graph through the
+existing dashboard broker. Command Center relay adoption and live audio remain
+separate acceptance work.
 
 The legacy text dispatcher now follows the same execution boundary as the native
 and component tools. It returns handoff previews and append-only audit outcomes;

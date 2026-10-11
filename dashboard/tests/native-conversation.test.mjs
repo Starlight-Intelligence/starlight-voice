@@ -5,6 +5,132 @@ import { NativeConversation, PcmPlayback, ToolBatch, TurnObservations, decodePcm
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
+function componentFixture({ gathering = "complete", fetchFn, onText = () => {} } = {}) {
+  let peer;
+  const requests = [], sent = [], track = { enabled: false, stop() {} };
+  class Peer extends EventTarget {
+    constructor(config) {
+      super(); peer = this; this.config = config; this.iceGatheringState = gathering;
+      this.localDescription = { type: "offer", sdp: "v=0\r\nm=audio gathered-candidates\r\n" };
+    }
+    addTrack() {}
+    createDataChannel(name) {
+      this.channelName = name;
+      return { readyState: "open", send: (data) => sent.push(data), close() {} };
+    }
+    async createOffer() { return { type: "offer", sdp: "ungathered-offer" }; }
+    async setLocalDescription() {}
+    async setRemoteDescription(answer) { this.answer = answer; }
+    close() { this.closed = true; }
+  }
+  const conversation = new NativeConversation({ PeerClass: Peer, onText,
+    media: { getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track] }) },
+    audioFactory: () => ({ play: async () => {}, pause() {} }),
+    fetchFn: async (path, options) => {
+      requests.push({ path, body: JSON.parse(options.body), options });
+      if (fetchFn) return fetchFn(path, options);
+      const body = path.endsWith("/session") ? { provider: "elevenlabs", session_id: "component-session",
+        capability: "read-cap", max_session_seconds: 300 }
+        : path.endsWith("/component-offer") ? { type: "answer", sdp: "fixture-answer" } : { ok: true };
+      return { ok: true, json: async () => body };
+    },
+  });
+  return { conversation, requests, sent, track, peer: () => peer };
+}
+
+test("component negotiates gathered audio through the same-origin broker without browser credentials", async () => {
+  const fixture = componentFixture(), { conversation, requests, track } = fixture;
+  try {
+    await conversation.start("elevenlabs", "account-voice");
+    assert.deepEqual(fixture.peer().config, { iceServers: [] });
+    assert.equal(fixture.peer().channelName, "pipecat");
+    assert.deepEqual(requests.map(request => request.path), ["/voice/session", "/voice/component-offer"]);
+    assert.deepEqual(requests[1].body, { session_id: "component-session", type: "offer",
+      sdp: "v=0\r\nm=audio gathered-candidates\r\n" });
+    assert.equal(requests[1].options.headers["X-Voice-Capability"], "read-cap");
+    assert.equal(conversation.observations, null);
+    assert.equal(track.enabled, false);
+    conversation.channel.onopen();
+    assert.equal(track.enabled, true);
+    assert.deepEqual(fixture.sent, ["ping"]);
+    assert.ok(conversation.componentHeartbeat);
+  } finally { await conversation.stop(); }
+  assert.equal(conversation.componentHeartbeat, null);
+  assert.ok(requests.every(request => request.path.startsWith("/voice/")));
+  assert.ok(requests.every(request => !request.body.client_secret));
+});
+
+test("component caption reset replaces the prior response and stale captions cannot enter a later session", async () => {
+  const seen = [], fixture = componentFixture({ onText: (...args) => seen.push(args) });
+  await fixture.conversation.start("elevenlabs", "account-voice");
+  const receive = fixture.conversation.channel.onmessage;
+  receive({ data: JSON.stringify({ type: "component.caption", reset: true }) });
+  receive({ data: JSON.stringify({ type: "component.caption", text: "Reply" }) });
+  assert.deepEqual(seen, [["", true], ["Reply"]]);
+  await fixture.conversation.stop();
+  receive({ data: JSON.stringify({ type: "component.caption", text: "Stale" }) });
+  assert.equal(seen.length, 2);
+});
+
+test("Stop aborts component ICE gathering and prevents a late offer", async () => {
+  const fixture = componentFixture({ gathering: "gathering" });
+  const started = fixture.conversation.start("elevenlabs", "account-voice");
+  await flush();
+  await fixture.conversation.stop();
+  await started;
+  fixture.peer().iceGatheringState = "complete";
+  fixture.peer().dispatchEvent(new Event("icegatheringstatechange"));
+  assert.deepEqual(fixture.requests.map(request => request.path), ["/voice/session", "/voice/stop"]);
+  assert.equal(fixture.conversation.active, false);
+});
+
+test("failed component broker cleanup retains its release action and blocks capture until retry", async () => {
+  let fails = true, stops = 0, captures = 0;
+  const conversation = new NativeConversation({ media: { getUserMedia: async () => { captures++; } },
+    fetchFn: async () => { stops++; return { ok: !fails, json: async () => ({ error: "Cleanup incomplete" }) }; },
+  });
+  conversation.session = { provider: "elevenlabs", session_id: "component-session", capability: "cap" };
+  await conversation.stop();
+  assert.equal(conversation.cleanupFailed, true);
+  await conversation.start("elevenlabs", "account-voice");
+  assert.equal(captures, 0);
+  fails = false; await conversation.stop();
+  assert.equal(stops, 2);
+  assert.equal(conversation.cleanupFailed, false);
+});
+
+test("a component reservation arriving after Stop retains failed cleanup ownership", async () => {
+  const reservation = deferred(); let fails = true;
+  const fixture = componentFixture({ fetchFn: async (path) => path.endsWith("/session") ? reservation.promise
+    : { ok: !fails, json: async () => ({ ok: true }) } });
+  const started = fixture.conversation.start("elevenlabs", "account-voice");
+  await flush();
+  await fixture.conversation.stop();
+  reservation.resolve({ ok: true, json: async () => ({ provider: "elevenlabs", session_id: "late", capability: "cap" }) });
+  await started;
+  assert.equal(fixture.conversation.cleanupFailed, true);
+  fails = false; await fixture.conversation.stop();
+  assert.equal(fixture.conversation.cleanupFailed, false);
+  assert.ok(fixture.requests.every(request => !request.path.endsWith("/component-offer")));
+});
+
+test("component discovery offers the configured account voice without starting capture", async () => {
+  const page = fakeVoiceDocument(); let captures = 0;
+  const conversation = mountNativeConversation(page.doc, { lifecycleTarget: page.lifecycle,
+    media: { getUserMedia: async () => { captures++; } },
+    fetchFn: async () => ({ ok: true, json: async () => ({ providers: [
+      { id: "elevenlabs", configured: true, voices: ["account-voice-id"] },
+    ] }) }),
+  });
+  try {
+    await conversation.mountReady;
+    assert.equal(captures, 0);
+    assert.equal(page.elements.voiceVoice.children[0].value, "account-voice-id");
+    assert.equal(page.elements.voiceVoice.children[0].textContent, "Configured ElevenLabs voice");
+    assert.equal(page.elements.voiceStart.disabled, false);
+  } finally { await conversation.dispose(); }
+});
+
 for (const failing of ["track", "channel", "peer", "audio", "playback", "capture", "context"]) {
   test(`Stop keeps releasing independent resources after ${failing} throws`, async () => {
     const attempted = [], requests = [], states = [];

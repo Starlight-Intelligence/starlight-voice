@@ -139,7 +139,8 @@ def _live_vad_analyzer():
     return SileroVADAnalyzer()
 
 
-def build_graph(settings: Settings | None = None, *, with_transport: bool):
+def build_graph(settings: Settings | None = None, *, with_transport: bool,
+                transport=None, read_bridge=None, read_scope=None, reply_observer=None, own_resource=None):
     """Assemble the Pipecat pipeline.
 
     with_transport=False builds the service chain only (no mic/speaker) so the graph can be
@@ -147,7 +148,12 @@ def build_graph(settings: Settings | None = None, *, with_transport: bool):
     Groq's segmented STT requires VAD events; graph assembly alone is insufficient.
     Returns (pipeline, transport_or_None).
     """
+    if with_transport and transport is not None:
+        raise ValueError("Select local audio or an existing transport, not both")
+    if read_scope is not None and read_bridge is None:
+        raise ValueError("An external read scope needs its existing broker")
     settings = settings or Settings.from_env()
+    audio_enabled = with_transport or transport is not None
     # Fail early (with an actionable install hint) if a SELECTED engine's deps are missing —
     # replaces a former dead no-op loop. require() raises VoiceDepsUnavailable on absence.
     for engine in (settings.stt_engine, "openrouter", settings.tts_engine, "pipecat"):
@@ -159,12 +165,18 @@ def build_graph(settings: Settings | None = None, *, with_transport: bool):
 
     from .component_tools import READ_INSTRUCTIONS, bind_component_tools
 
-    vad = _live_vad_analyzer() if with_transport else None
-    stt = _stt_service(settings)
-    llm = _llm_service(settings)
-    tts = _tts_service(settings)
+    def owned(resource):
+        if own_resource is not None and resource is not None:
+            own_resource(resource)
+        return resource
+
+    vad = owned(_live_vad_analyzer()) if audio_enabled else None
+    stt = owned(_stt_service(settings))
+    llm = owned(_llm_service(settings))
+    tts = owned(_tts_service(settings))
     router_proc = _router_processor()
-    tools, tool_lifecycle = bind_component_tools(llm)
+    tools, tool_lifecycle = (bind_component_tools(llm, bridge=read_bridge, scope=read_scope)
+                             if read_bridge is not None else bind_component_tools(llm))
 
     context = LLMContext(
         messages=[{
@@ -172,25 +184,26 @@ def build_graph(settings: Settings | None = None, *, with_transport: bool):
             "content": READ_INSTRUCTIONS,
         }], tools=tools,
     )
-    if with_transport:
+    if audio_enabled:
         from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
 
         pair = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(vad_analyzer=vad))
     else:
         pair = LLMContextAggregatorPair(context)
 
-    transport = None
     head: list = []
     tail: list = []
     if with_transport:
         from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
         transport = LocalAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True))
+    if transport is not None:
         head = [transport.input()]
         tail = [transport.output()]
 
     pipeline = Pipeline(
-        [*head, stt, router_proc, tool_lifecycle, pair.user(), llm, tts, *tail, pair.assistant()]
+        [*head, stt, router_proc, tool_lifecycle, pair.user(), llm,
+         *([reply_observer] if reply_observer is not None else []), tts, *tail, pair.assistant()]
     )
     return pipeline, transport
 

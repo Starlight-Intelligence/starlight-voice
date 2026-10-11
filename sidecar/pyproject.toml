@@ -14,6 +14,11 @@ dependencies = []
 native = [
   "httpx>=0.27",               # browser handles native audio; no Pipecat, torch or audio-device wheels
 ]
+voice-browser = [
+  "pipecat-ai[webrtc,groq,elevenlabs,openrouter]>=1.12,<2",
+  "websockets>=15",
+  "httpx>=0.27",
+]
 voice = [
   # Pipecat 1.0+ orchestrating CLOUD services + local mic/speaker I/O. No GPU/CUDA.
   # Local component sessions load the SDK's bundled Silero analyzer for speech boundaries.

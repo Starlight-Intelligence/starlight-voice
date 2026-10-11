@@ -24,14 +24,25 @@ def unavailable():
 
 
 class ComponentReadTools:
-    def __init__(self, *, bridge=None):
+    def __init__(self, *, bridge=None, scope=None):
+        if scope is not None and bridge is None:
+            raise ValueError("An externally owned read scope needs its existing broker")
         self.bridge = bridge if bridge is not None else NativeBridge()
-        self.scope = None
+        self.scope = dict(scope) if scope is not None else None
+        self.runtime_owned = scope is not None
         self.generation = 0
         self.pending = set()
 
     def start(self):
-        self.scope = self.bridge.open_read_scope()
+        if self.runtime_owned:
+            if self.scope is None:
+                raise BridgeError("An externally owned read scope cannot be restarted", 401)
+            with self.bridge.lock:
+                session = self.bridge.authorize(self.scope, self.scope["capability"])
+                if session.allowed_tools != READ_NAMES or not session.runtime_owned:
+                    raise BridgeError("Component tools require the existing runtime-owned read scope", 403)
+        else:
+            self.scope = self.bridge.open_read_scope()
         self.generation += 1
 
     def invalidate(self):
@@ -46,7 +57,7 @@ class ComponentReadTools:
 
     async def stop(self):
         scope, self.scope = self.scope, None
-        if scope is not None:
+        if scope is not None and not self.runtime_owned:
             try:
                 self.bridge.stop({"session_id": scope["session_id"]}, scope["capability"])
             except BridgeError:
@@ -78,14 +89,14 @@ class ComponentReadTools:
             self.pending.discard(task)
 
 
-def bind_component_tools(llm):
+def bind_component_tools(llm, *, bridge=None, scope=None):
     """Lazy SDK binding: graph assembly opens no audio device, MCP or provider socket."""
     from pipecat.adapters.schemas.function_schema import FunctionSchema
     from pipecat.adapters.schemas.tools_schema import ToolsSchema
     from pipecat.frames.frames import CancelFrame, EndFrame, InterruptionFrame, StartFrame
     from pipecat.processors.frame_processor import FrameProcessor
 
-    reads = ComponentReadTools()
+    reads = ComponentReadTools(bridge=bridge, scope=scope)
     schema = ToolsSchema(standard_tools=[FunctionSchema(
         name=tool["name"], description=tool["description"], properties=tool["parameters"]["properties"],
         required=tool["parameters"].get("required", []),

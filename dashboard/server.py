@@ -99,7 +99,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         if path == "/voice/capabilities":
-            self._json(200, self.server.voice_bridge.capabilities())
+            capabilities = self.server.voice_bridge.capabilities()
+            capabilities["providers"].append(self.server.component_host.capabilities())
+            self._json(200, capabilities)
             return
         if path == "/healthz":
             self._json(200, {"ok": True, "service": "starlight-voice-dashboard"})
@@ -114,7 +116,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._serve_file(*entry)
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path in {"/voice/session", "/voice/tool", "/voice/stop", "/voice/observation"}:
+        if urlparse(self.path).path in {"/voice/session", "/voice/tool", "/voice/stop", "/voice/observation", "/voice/component-offer"}:
             self._voice_post()
             return
         if urlparse(self.path).path != "/ratings":
@@ -166,7 +168,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         try:
             lengths = self.headers.get_all("Content-Length", [])
-            if len(lengths) != 1 or not lengths[0].isdigit() or not 0 < int(lengths[0]) <= 8192:
+            limit = 64 * 1024 if urlparse(self.path).path == "/voice/component-offer" else 8192
+            if len(lengths) != 1 or not lengths[0].isdigit() or not 0 < int(lengths[0]) <= limit:
                 self.close_connection = True
                 raise BridgeError("Voice request exceeds the body limit", 413)
             self.connection.settimeout(3)
@@ -180,13 +183,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             bridge = self.server.voice_bridge
             path = urlparse(self.path).path
             if path == "/voice/session":
-                result = asyncio.run(bridge.start(payload))
+                result = (self.server.component_host.call("start", payload) if payload.get("provider") == "elevenlabs"
+                          else asyncio.run(bridge.start(payload)))
+            elif path == "/voice/component-offer":
+                result = self.server.component_host.call("offer", payload, capability)
             elif path == "/voice/tool":
                 result = asyncio.run(bridge.tool(payload, capability))
             elif path == "/voice/observation":
                 result = bridge.observe(payload, capability)
             else:
-                result = bridge.stop(payload, capability)
+                result = self.server.component_host.try_stop(payload, capability)
+                if result is None:
+                    result = bridge.stop(payload, capability)
             self._json(200, result)
         except BridgeError as error:
             self._json(error.status, {"error": str(error)})
@@ -219,12 +227,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+class VoiceServer(ThreadingHTTPServer):
+    def server_close(self):
+        try:
+            if hasattr(self, "component_host"):
+                self.component_host.close()
+        finally:
+            super().server_close()
+
+
 def make_server(port: int | None = None) -> ThreadingHTTPServer:
+    from starlight_voice.component_host import ComponentHost
     from starlight_voice.native_bridge import NativeBridge
 
     port = port if port is not None else int(os.environ.get("STARLIGHT_DASHBOARD_PORT", "8765"))
-    server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
+    server = VoiceServer(("127.0.0.1", port), DashboardHandler)
     server.voice_bridge = NativeBridge()
+    server.component_host = ComponentHost(server.voice_bridge)
     server.voice_slots = threading.BoundedSemaphore(4)
     return server
 
@@ -236,7 +255,10 @@ def main() -> None:
     server = make_server()
     host, port = server.server_address
     print(f"Starlight Voice: http://{host}:{port}  (console at /dashboard/cockpit.html)")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

@@ -217,7 +217,7 @@ export class NativeConversation {
       stopping: this.stopping, cleanupFailed: this.cleanupFailed });
   }
   endpoint(action) {
-    if (!["session", "tool", "observation", "stop", "capabilities"].includes(action)) throw new Error("Unknown voice broker action");
+    if (!["session", "tool", "observation", "stop", "capabilities", "component-offer"].includes(action)) throw new Error("Unknown voice broker action");
     return `${this.brokerPrefix}/${action}`;
   }
   async post(path, body, { signal = this.abort?.signal, keepalive = false, capability = this.session?.capability } = {}) {
@@ -270,12 +270,19 @@ export class NativeConversation {
       stream.getAudioTracks().forEach((track) => { track.enabled = false; track.onended = () => this.stop("Microphone disconnected"); });
       this.state("Connecting to the voice provider…");
       const session = await this.post("/voice/session", { provider, voice });
-      if (epoch !== this.epoch) { await this.releaseSession(session); return; }
+      if (epoch !== this.epoch) {
+        if (session.provider === "elevenlabs") {
+          this.rememberCleanup(() => this.releaseSession(session));
+          await waitForSettled(this.retryCleanup(), 1000);
+          if (this.cleanupFailed && !this.active && !this.stopping) this.state(CLEANUP_REQUIRED, true);
+        } else await this.releaseSession(session);
+        return;
+      }
       this.session = session;
       this.observationWrites = new Set();
       this.observationAbort = new AbortController();
       const writes = this.observationWrites, observationAbort = this.observationAbort;
-      this.observations = new TurnObservations((observation) => {
+      this.observations = provider === "elevenlabs" ? null : new TurnObservations((observation) => {
         if (writes.size >= 3) {
           if (epoch === this.epoch) this.state("Listening · turn history fell behind", true);
           return;
@@ -290,8 +297,9 @@ export class NativeConversation {
       this.tools = new ToolBatch((callId, name, args) => this.executeTool(callId, name, args, epoch),
         (event) => { if (epoch === this.epoch) this.send(event); });
       this.limitTimer = setTimeout(() => this.stop("Session time limit reached"), session.max_session_seconds * 1000);
-      this.readyTimer = setTimeout(() => this.stop("Connection timed out; check provider access", true), 15000);
+      this.readyTimer = setTimeout(() => this.stop("Connection timed out; check provider access", true), provider === "elevenlabs" ? 25000 : 15000);
       if (provider === "grok") await this.connectGrok(epoch);
+      else if (provider === "elevenlabs") await this.connectComponent(epoch);
       else await this.connectOpenAI(epoch);
     } catch (error) {
       if (epoch === this.epoch) await this.stop(error.name === "NotAllowedError" ? "Microphone permission was denied. Allow it, then start again." : error.message, true);
@@ -363,6 +371,70 @@ export class NativeConversation {
     if (epoch !== this.epoch) return;
     if (answer.length > 64 * 1024) throw new Error("Provider SDP exceeds the limit");
     await pc.setRemoteDescription({ type: "answer", sdp: answer });
+  }
+  async connectComponent(epoch) {
+    const pc = new this.PeerClass({ iceServers: [] }); this.peer = pc;
+    const audio = this.audioFactory(); this.audio = audio; audio.autoplay = true;
+    pc.ontrack = ({ streams }) => {
+      if (epoch !== this.epoch) return;
+      audio.srcObject = streams[0];
+      audio.play().catch(() => {
+        if (epoch === this.epoch) this.stop("Audio playback was blocked. Allow audio, then reconnect.", true);
+      });
+    };
+    pc.onconnectionstatechange = () => {
+      if (epoch === this.epoch && ["failed", "disconnected", "closed"].includes(pc.connectionState)) this.stop("Component voice connection ended");
+    };
+    this.stream.getTracks().forEach((track) => pc.addTrack(track, this.stream));
+    const dc = pc.createDataChannel("pipecat"); this.channel = dc;
+    dc.onopen = () => {
+      if (epoch !== this.epoch) return;
+      this.listen();
+      clearInterval(this.componentHeartbeat);
+      const heartbeat = () => {
+        if (epoch !== this.epoch || dc.readyState !== "open") return;
+        try { dc.send("ping"); }
+        catch { this.stop("Component voice transport failed", true); }
+      };
+      this.componentHeartbeat = setInterval(heartbeat, 5000);
+      heartbeat();
+    };
+    dc.onmessage = ({ data }) => {
+      if (epoch !== this.epoch) return;
+      try {
+        if (typeof data !== "string" || data.length > 8192) throw new Error("Component caption exceeds the limit");
+        const message = JSON.parse(data);
+        if (message.type !== "component.caption") return;
+        if (message.reset === true) this.onText("", true);
+        if (typeof message.text === "string" && message.text.length <= 4096) this.onText(message.text);
+      } catch (error) { this.stop(error.message, true); }
+    };
+    dc.onerror = () => { if (epoch === this.epoch) this.stop("Component voice transport failed", true); };
+    dc.onclose = () => { if (epoch === this.epoch) this.stop("Component voice connection ended"); };
+    const offer = await pc.createOffer();
+    if (epoch !== this.epoch) return;
+    await pc.setLocalDescription(offer);
+    if (pc.iceGatheringState !== "complete") {
+      await new Promise((resolve, reject) => {
+        const signal = this.abort.signal;
+        const cleanup = () => {
+          clearTimeout(timer); pc.removeEventListener("icegatheringstatechange", changed);
+          signal.removeEventListener("abort", aborted);
+        };
+        const changed = () => { if (pc.iceGatheringState === "complete") { cleanup(); resolve(); } };
+        const aborted = () => { cleanup(); reject(new Error("Component connection stopped")); };
+        const timer = setTimeout(() => { cleanup(); reject(new Error("Component media negotiation timed out")); }, 8000);
+        pc.addEventListener("icegatheringstatechange", changed); signal.addEventListener("abort", aborted, { once: true });
+        if (signal.aborted) aborted(); else changed();
+      });
+    }
+    if (epoch !== this.epoch) return;
+    const answer = await this.post("/voice/component-offer", {
+      session_id: this.session.session_id, sdp: pc.localDescription.sdp, type: "offer",
+    });
+    if (epoch !== this.epoch) return;
+    if (answer.type !== "answer" || typeof answer.sdp !== "string" || answer.sdp.length > 48 * 1024) throw new Error("Component SDP answer is invalid");
+    await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
   }
   bindEvents(channel, epoch) {
     channel.onmessage = ({ data }) => {
@@ -440,7 +512,10 @@ export class NativeConversation {
       await this.post("/voice/stop", { session_id: session.session_id }, {
         signal: AbortSignal.timeout(3000), keepalive: true, capability: session.capability,
       });
-    } catch { /* Local authority expires even if the cleanup request cannot arrive. */ }
+    } catch (error) {
+      if (session.provider === "elevenlabs") throw error;
+      /* Native authority expires even if the cleanup request cannot arrive. */
+    }
   }
   rememberCleanup(run) { this.cleanupTasks.add({ run, pending: null }); }
   retryCleanup() {
@@ -468,6 +543,7 @@ export class NativeConversation {
     this.stopping = true;
     ++this.epoch; this.active = false; this.ready = false;
     clearTimeout(this.readyTimer); clearTimeout(this.limitTimer); this.abort?.abort();
+    clearInterval(this.componentHeartbeat); this.componentHeartbeat = null;
     const { stream, channel, peer, audio, playback, source, capture, silent, context, session, observations } = this;
     this.stream = this.channel = this.peer = this.audio = this.playback = this.context = this.session = this.observations = null;
     this.source = this.capture = this.silent = null;
@@ -501,12 +577,13 @@ export class NativeConversation {
         node.disconnect();
       });
       if (context) this.rememberCleanup(() => context.close());
+      if (session?.provider === "elevenlabs") this.rememberCleanup(() => this.releaseSession(session));
       try {
         await waitForSettled(this.retryCleanup(), 1000);
         await waitForSettled(writes, 2000);
       } finally {
         observationAbort?.abort();
-        await this.releaseSession(session);
+        if (session?.provider !== "elevenlabs") await this.releaseSession(session);
         this.stopping = false; this.stopPromise = null;
         try { this.state(this.cleanupFailed ? CLEANUP_REQUIRED : label, this.cleanupFailed || error); }
         catch { /* The caller may have disposed its view while release was pending. */ }
@@ -545,7 +622,7 @@ export function mountNativeConversation(doc = document, options = {}) {
       stop.textContent = state.cleanupFailed && !state.stopping ? "Retry cleanup" : "Stop";
       mute.textContent = state.muted ? "Unmute" : "Mute"; mute.setAttribute("aria-pressed", String(state.muted));
     },
-    onText: (text) => { if (!disposed) caption.textContent = (caption.textContent + text).slice(-2000); },
+    onText: (text, reset = false) => { if (!disposed) caption.textContent = ((reset ? "" : caption.textContent) + text).slice(-2000); },
     onMissionDraft: (draft) => {
       if (disposed) return;
       if (options.onMissionDraft) options.onMissionDraft(draft);
@@ -580,7 +657,8 @@ export function mountNativeConversation(doc = document, options = {}) {
     let choices = [];
     for (const spec of caps.providers) {
       const option = doc.createElement("option"); option.value = spec.id;
-      option.textContent = `${spec.id === "grok" ? "Grok native voice" : "OpenAI WebRTC"}${spec.configured ? "" : " · key needed"}`;
+      const label = spec.id === "grok" ? "Grok native voice" : spec.id === "elevenlabs" ? "ElevenLabs component" : "OpenAI WebRTC";
+      option.textContent = label + (spec.configured ? "" : spec.id === "elevenlabs" ? " · setup needed" : " · key needed");
       option.disabled = !spec.configured; provider.append(option);
       if (spec.configured) choices.push(spec);
     }
@@ -588,7 +666,7 @@ export function mountNativeConversation(doc = document, options = {}) {
       voice.replaceChildren();
       for (const name of caps.providers.find((spec) => spec.id === provider.value)?.voices || []) {
         const option = doc.createElement("option"); option.value = name;
-        option.textContent = name[0].toUpperCase() + name.slice(1); voice.append(option);
+        option.textContent = provider.value === "elevenlabs" ? "Configured ElevenLabs voice" : name[0].toUpperCase() + name.slice(1); voice.append(option);
       }
     };
     bind(provider, "change", chooseVoice);
@@ -601,6 +679,7 @@ export function mountNativeConversation(doc = document, options = {}) {
     else {
       placeholder(provider, "No provider configured"); placeholder(voice, "Voice unavailable");
       status.textContent = "Configure XAI_API_KEY or OPENAI_API_KEY on the server to enable native voice";
+      if (caps.providers.some((spec) => spec.id === "elevenlabs")) status.textContent += ", or configure the ElevenLabs component runtime and account voice";
     }
   } catch { if (!disposed) {
     configured = false;

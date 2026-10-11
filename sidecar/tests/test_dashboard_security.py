@@ -81,3 +81,44 @@ def test_observation_route_uses_the_guarded_broker_without_starting_server():
     value.server.voice_bridge = SimpleNamespace(observe=lambda body, cap: seen.append((body, cap)) or {"stored": True})
     value.do_POST()
     assert seen == [(payload, "cap")] and results == [(200, {"stored": True})]
+
+
+@pytest.mark.parametrize("path,action,payload", [
+    ("/voice/session", "start", {"provider": "elevenlabs", "voice": "fixture"}),
+    ("/voice/component-offer", "offer", {"session_id": "fixture", "type": "offer", "sdp": "x" * 9000}),
+])
+def test_component_routes_reuse_the_existing_guarded_server_with_separate_offer_limit(path, action, payload):
+    value, results = handler(json.dumps(payload).encode())
+    value.path = path
+    value.headers["X-Voice-Capability"] = "cap"
+    seen = []
+    value.server.voice_bridge = SimpleNamespace()
+    value.server.component_host = SimpleNamespace(call=lambda *args: seen.append(args) or {"ok": True})
+    value.do_POST()
+    assert results == [(200, {"ok": True})]
+    assert seen == ([(action, payload)] if action == "start" else [(action, payload, "cap")])
+
+
+def test_component_offer_cannot_bypass_same_origin_or_body_bounds():
+    for body, origin, expected in [(b"{}", "https://attacker.example", 403),
+                                   (b"x" * (64 * 1024 + 1), "http://127.0.0.1:8765", 413)]:
+        value, results = handler(body)
+        value.path = "/voice/component-offer"
+        value.headers.replace_header("Origin", origin)
+        value.do_POST()
+        assert results[0][0] == expected
+
+
+def test_component_stop_reaches_its_owner_without_native_release():
+    payload = {"session_id": "fixture"}
+    value, results = handler(json.dumps(payload).encode())
+    value.path = "/voice/stop"
+    value.headers["X-Voice-Capability"] = "cap"
+    seen = []
+    value.server.voice_bridge = SimpleNamespace(stop=lambda *_: pytest.fail("Native release bypassed runtime owner"))
+    value.server.component_host = SimpleNamespace(
+        try_stop=lambda *args: seen.append(args) or {"ok": True, "runtime_closed": True},
+    )
+    value.do_POST()
+    assert seen == [(payload, "cap")]
+    assert results == [(200, {"ok": True, "runtime_closed": True})]

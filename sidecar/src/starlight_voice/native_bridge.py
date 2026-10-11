@@ -121,6 +121,7 @@ class Session:
     provider: str = ""
     voice: str = ""
     allowed_tools: frozenset[str] | None = None
+    runtime_owned: bool = False
 
 
 async def mint_secret(provider: str, voice: str, *, transport=None) -> dict:
@@ -173,14 +174,24 @@ class NativeBridge:
         self.minting = False
         self.last_start = float("-inf")
 
-    def open_read_scope(self) -> dict:
+    def open_read_scope(self, *, runtime_owned: bool = False) -> dict:
         """Internal component-graph authority; no audio credential or HTTP start route."""
         with self.lock:
-            if self.minting or (self.session and self.session.expires > self.clock()):
+            if self.minting or (self.session and (self.session.expires > self.clock() or self.session.runtime_owned)):
                 raise BridgeError("A read scope is already active", 429)
             self.session = Session(str(uuid.uuid4()), secrets.token_urlsafe(32), self.clock() + 300,
-                                   allowed_tools=READ_ONLY_TOOL_NAMES)
+                                   allowed_tools=READ_ONLY_TOOL_NAMES, runtime_owned=runtime_owned)
             return {"session_id": self.session.session_id, "capability": self.session.capability}
+
+    def release_runtime_scope(self, scope: dict) -> None:
+        """Internal owner release, only after physical runtime cleanup succeeds."""
+        with self.lock:
+            session = self.session
+            if (not session or not session.runtime_owned or session.allowed_tools != READ_ONLY_TOOL_NAMES
+                    or scope.get("session_id") != session.session_id
+                    or not secrets.compare_digest(scope.get("capability", ""), session.capability)):
+                raise BridgeError("Component runtime ownership changed; cleanup remains held", 409)
+            self.session = None
 
     def capabilities(self) -> dict:
         return {"providers": [
@@ -202,7 +213,7 @@ class NativeBridge:
             raise BridgeError("Unknown provider or voice")
         with self.lock:
             now = self.clock()
-            if self.minting or (self.session and self.session.expires > now) or now - self.last_start < 60:
+            if self.minting or (self.session and (self.session.expires > now or self.session.runtime_owned)) or now - self.last_start < 60:
                 raise BridgeError("A session is active or the 60-second start cooldown has not elapsed", 429)
             self.minting, self.last_start = True, now
         try:
@@ -233,7 +244,9 @@ class NativeBridge:
 
     def stop(self, payload: dict, capability: str) -> dict:
         with self.lock:
-            self.authorize(payload, capability)
+            session = self.authorize(payload, capability)
+            if session.runtime_owned:
+                raise BridgeError("Component runtime must finish its own cleanup before releasing authority", 409)
             self.session = None
         return {"ok": True, "provider_connection_revoked": False}
 

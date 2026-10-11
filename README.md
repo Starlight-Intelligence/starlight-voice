@@ -23,6 +23,7 @@ What exists today:
 - public landing site (`site/`) and a live operator console (`dashboard/`) sharing one design system
 - native Grok WebSocket and OpenAI WebRTC conversation paths with a local credential broker and scoped read tools; live audio remains unverified
 - selectable ElevenLabs v4 Turbo/v3 Conversational dialogue binding for the Pipecat component graph, requiring an explicit account voice; device playback remains unverified
+- an optional browser ElevenLabs component connection through the same dashboard broker; live authentication and audio remain unverified
 - benchmark smoke scripts and GitHub Actions CI
 - committed `Cargo.lock` for reproducible builds
 - first-principles spec at `docs/SPEC.md`
@@ -143,6 +144,25 @@ remain open.
 To deploy just the landing site statically, publish the `site/` directory as-is.
 
 ## Configuration
+
+For the browser component route, install `python -m pip install -e "./sidecar[voice-browser]"`
+only under machine admission. Configure `GROQ_API_KEY`, an inference
+`OPENROUTER_API_KEY`, and `STARLIGHT_TTS_VOICE_ID`. Direct ElevenLabs synthesis
+also needs `ELEVENLABS_API_KEY`; the explicit OpenRouter speech option below uses
+the OpenRouter key. The console lists only the configured voice, without assigning
+it a licensed name or a listening preference. Configuration presence does not
+verify authentication.
+
+This optional route connects browser audio to the existing Pipecat graph over
+SmallWebRTC. It requires Pipecat 1.12 or newer for detector cleanup and installs
+WebRTC codecs and ONNX dependencies. It uses local Silero detection, while STT,
+text inference and synthesis use cloud providers. Native Grok/OpenAI remain the
+lighter alternative. No microphone, model, pipeline or async host loop starts
+during discovery. Start reserves one five-minute, 20-read scope; its SDP offer
+creates the runtime. Stop revokes reads and releases media before freeing that
+reservation. Failed cleanup holds the slot and exposes Retry cleanup. The existing
+server owns the demand-created async loop until server shutdown; no extra service
+is registered. See the architecture document for transport and verification limits.
 
 The standalone local component conversation needs speech boundaries for Groq's
 segmented transcription. Its existing `voice`/`providers` runtime supplies the
