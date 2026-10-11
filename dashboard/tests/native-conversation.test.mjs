@@ -126,7 +126,7 @@ test("component discovery offers the configured account voice without starting c
     await conversation.mountReady;
     assert.equal(captures, 0);
     assert.equal(page.elements.voiceVoice.children[0].value, "account-voice-id");
-    assert.equal(page.elements.voiceVoice.children[0].textContent, "Configured ElevenLabs voice");
+    assert.equal(page.elements.voiceVoice.children[0].textContent, "Configured voice");
     assert.equal(page.elements.voiceStart.disabled, false);
   } finally { await conversation.dispose(); }
 });
@@ -165,6 +165,7 @@ test("rejected audio closure blocks new capture until an explicit retry releases
   conversation.context = { close: async () => { closes++; if (fails) throw new Error("private close failure"); } };
   await conversation.stop();
   assert.equal(conversation.cleanupFailed, true);
+  assert.equal(conversation.cleanupTasks.size, 1);
   assert.match(states.at(-1).label, /retry cleanup/i);
   await conversation.start("openai", "marin");
   assert.equal(captures, 0);

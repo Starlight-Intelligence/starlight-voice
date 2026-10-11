@@ -4,7 +4,7 @@ export function isMissionText(text, maxLength = 900) {
     !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069\ud800-\udfff]/u.test(text);
 }
 
-const CLEANUP_REQUIRED = "Audio cleanup is incomplete. Retry cleanup or reload this page.";
+const CLEANUP_REQUIRED = "Conversation cleanup is incomplete. Retry cleanup.";
 
 async function waitForSettled(promises, milliseconds) {
   let timer;
@@ -666,7 +666,7 @@ export function mountNativeConversation(doc = document, options = {}) {
       voice.replaceChildren();
       for (const name of caps.providers.find((spec) => spec.id === provider.value)?.voices || []) {
         const option = doc.createElement("option"); option.value = name;
-        option.textContent = provider.value === "elevenlabs" ? "Configured ElevenLabs voice" : name[0].toUpperCase() + name.slice(1); voice.append(option);
+        option.textContent = provider.value === "elevenlabs" ? "Configured voice" : name[0].toUpperCase() + name.slice(1); voice.append(option);
       }
     };
     bind(provider, "change", chooseVoice);
