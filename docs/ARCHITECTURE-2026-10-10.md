@@ -57,7 +57,10 @@ those hidden reads and let the model request an approved summary when needed.
 This establishes usable context wiring, not measured answer quality or latency.
 
 Start creates local read authority without opening a device or provider socket.
-Interruption cancels pending reads and invalidates their result generation. End,
+Interruption invalidates the result generation, then Pipecat cancels its registered
+function tasks and marks their conversation entries cancelled. Cancelling those
+SDK tasks in the lifecycle processor first would leave unfinished tool entries.
+The SDK test covers a successful new read after interruption. End,
 Cancel and cleanup release the scope before accepting another result. The same
 scope remains available after an interruption for the next turn; it is not renewed.
 Focused synthetic tests cover validation, replay, expiry, budget and late-result

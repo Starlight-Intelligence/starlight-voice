@@ -30,7 +30,7 @@ from starlight_voice.native_bridge import NativeBridge  # noqa: E402
 
 @dataclass
 class Ask(DataFrame):
-    pass
+    tool_call_id: str = "read-1"
 
 
 class ToolModel(LLMService):
@@ -40,7 +40,7 @@ class ToolModel(LLMService):
         await super().process_frame(frame, direction)
         if isinstance(frame, Ask) and direction == FrameDirection.DOWNSTREAM:
             await self.run_function_calls([FunctionCallFromLLM(
-                function_name="sis_recall_projection", tool_call_id="read-1",
+                function_name="sis_recall_projection", tool_call_id=frame.tool_call_id,
                 arguments=self.arguments, context=self.context,
             )])
         else:
@@ -80,11 +80,12 @@ def assemble(bridge, arguments=None):
     return worker, context, lifecycle, sink
 
 
-async def wait_for_result(context):
+async def wait_for_result(context, tool_call_id=None):
     async def wait():
         while True:
             results = [message for message in context.get_messages()
-                       if message.get("role") == "tool" and message.get("content") != "IN_PROGRESS"]
+                       if message.get("role") == "tool" and message.get("content") != "IN_PROGRESS"
+                       and (tool_call_id is None or message.get("tool_call_id") == tool_call_id)]
             if results:
                 return results
             await asyncio.sleep(0.005)
@@ -137,7 +138,12 @@ def test_sdk_lifecycle_cancels_pending_reads_without_late_reference(action):
         entered, cancelled = asyncio.Event(), asyncio.Event()
 
         class Bridge(NativeBridge):
+            calls = 0
+
             async def _read(self, name, args):
+                self.calls += 1
+                if self.calls > 1:
+                    return {"status": "ok", "reference": "Recovered approved summary"}
                 entered.set()
                 try:
                     await asyncio.Future()
@@ -155,6 +161,13 @@ def test_sdk_lifecycle_cancels_pending_reads_without_late_reference(action):
                 await worker.queue_frames([InterruptionFrame()])
                 await asyncio.wait_for(sink.interrupted.wait(), timeout=3)
                 assert lifecycle.reads.scope is not None
+                first = await wait_for_result(context, "read-1")
+                assert first[0]["content"] == "CANCELLED"
+                await worker.queue_frames([Ask(tool_call_id="read-2")])
+                recovered = await wait_for_result(context, "read-2")
+                result = json.loads(recovered[0]["content"])
+                assert result == {"status": "ok", "reference": "Recovered approved summary",
+                                  "instruction_authority": False}
                 await worker.queue_frames([EndFrame()])
             else:
                 await worker.queue_frames([CancelFrame()])
@@ -166,5 +179,10 @@ def test_sdk_lifecycle_cancels_pending_reads_without_late_reference(action):
                 await asyncio.wait_for(runner, timeout=5)
         assert lifecycle.reads.scope is None and bridge.session is None
         assert not lifecycle.reads.pending
-        assert "reference" not in json.dumps(context.get_messages())
+        assert [message for message in context.get_messages()
+                if message.get("role") in {"system", "developer"}] == [
+                    {"role": "system", "content": READ_INSTRUCTIONS}]
+        first = [message for message in context.get_messages()
+                 if message.get("role") == "tool" and message.get("tool_call_id") == "read-1"]
+        assert all(message["content"] in {"CANCELLED", "IN_PROGRESS"} for message in first)
     asyncio.run(run())

@@ -34,8 +34,11 @@ class ComponentReadTools:
         self.scope = self.bridge.open_read_scope()
         self.generation += 1
 
-    async def interrupt(self):
+    def invalidate(self):
         self.generation += 1
+
+    async def interrupt(self):
+        self.invalidate()
         tasks = tuple(task for task in self.pending if task is not asyncio.current_task())
         for task in tasks:
             task.cancel()
@@ -102,7 +105,10 @@ def bind_component_tools(llm):
             elif isinstance(frame, (EndFrame, CancelFrame)):
                 await reads.stop()
             elif isinstance(frame, InterruptionFrame):
-                await reads.interrupt()
+                # The SDK owns registered function tasks and their CANCELLED
+                # context entries. Invalidating prevents late results; forwarding
+                # lets the LLM service cancel the read and settle its tool entry.
+                reads.invalidate()
             await self.push_frame(frame, direction)
 
         async def cleanup(self):
