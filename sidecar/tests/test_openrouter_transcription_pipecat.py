@@ -35,3 +35,26 @@ def test_real_sdk_receives_transcription_silence_or_redacted_fatal_error(reply):
         finally:
             await service.cleanup()
     asyncio.run(run())
+
+
+def test_grok_profile_pin_reasoning_and_key_reach_the_actual_sdk_without_requests(monkeypatch):
+    pytest.importorskip("openai")
+    from starlight_voice.config import Settings
+    from starlight_voice.voice_loop import _llm_service
+
+    monkeypatch.setenv("STARLIGHT_VOICE_PROFILE", "grok-openrouter")
+    monkeypatch.setenv("STARLIGHT_VOICE_OPENROUTER_API_KEY", "synthetic-inference-fixture")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "wrong-shared-fixture")
+
+    async def run():
+        service = _llm_service(Settings.from_env())
+        try:
+            assert service._settings.model == "x-ai/grok-4.7"
+            assert service._settings.extra["provider"] == {"order": ["xai"], "allow_fallbacks": False}
+            assert service._settings.extra["reasoning"] == {"effort": "low"}
+            assert service._client.api_key == "synthetic-inference-fixture"
+            assert str(service._client.base_url) == "https://openrouter.ai/api/v1/"
+        finally:
+            await service._client.close()
+            await service.cleanup()
+    asyncio.run(run())
