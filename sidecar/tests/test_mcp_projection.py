@@ -8,6 +8,40 @@ import pytest
 from starlight_voice.mcp_projection import LocalMcpReader, ProjectionUnavailable, local_mcp_endpoint
 
 
+def test_verified_context_reuse_keeps_clients_credentials_and_sessions_separate(monkeypatch):
+    import ssl
+
+    original = httpx.AsyncClient
+    clients, contexts, exchanges = [], [], []
+
+    def client(*args, **kwargs):
+        context = kwargs["verify"]
+        assert isinstance(context, ssl.SSLContext)
+        assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+        assert context.cert_store_stats()["x509_ca"] > 0
+        assert kwargs["trust_env"] is False and kwargs["follow_redirects"] is False
+        mock, requests = transport(sse=False)
+        kwargs["transport"] = mock
+        instance = original(*args, **kwargs)
+        clients.append(instance)
+        contexts.append(context)
+        exchanges.append(requests)
+        return instance
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+
+    async def run():
+        for token in ("first-read-only-token", "second-read-only-token"):
+            await LocalMcpReader("http://127.0.0.1:8787/mcp", token).call("memory_recall", {"query": "Project"})
+
+    asyncio.run(run())
+    assert clients[0] is not clients[1] and all(item.is_closed for item in clients)
+    assert contexts[0] is contexts[1]
+    for requests, token in zip(exchanges, ("first-read-only-token", "second-read-only-token"), strict=True):
+        assert all(request.headers["Authorization"] == f"Bearer {token}" for request in requests)
+        assert requests[-1].method == "DELETE"
+
+
 def projection_reply_transport(metadata, *, sse=False):
     mock, requests = transport(sse=sse)
 

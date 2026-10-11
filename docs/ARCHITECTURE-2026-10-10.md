@@ -282,6 +282,35 @@ are delivered as function output with no instruction authority. Raw audio, trans
 and tool arguments are not persisted by this path; provider retention remains governed
 by the chosen account and provider terms.
 
+### MCP client setup cost
+
+The loopback MCP reader reuses one lazily loaded, verified certificate context
+with HTTPX's existing certifi trust bundle. Each exchange still creates and closes
+its own HTTP client and MCP session. Tokens, headers, connection pools and result
+authority are separate; proxy/redirect refusal and scoped teardown remain in force.
+Certificate verification and hostname checks remain enabled. Imports and discovery
+load no certificate bundle. A process restart reloads changed trust bundles.
+See [HTTPX's SSL context configuration](https://www.python-httpx.org/advanced/ssl/)
+and [Python's context-sharing contract](https://docs.python.org/3.12/library/ssl.html#ssl.SSLContext).
+
+On this machine, six metadata-only reads through the already-running shared MCP
+plane had a median of 253 ms before this change. Tracing attributed 167–238 ms
+per call to HTTP client construction, while requests took 3–22 ms to reach headers.
+Six candidate reads had a median of 27 ms, with subsequent reads taking 20–28 ms.
+The first candidate read still took 555 ms. These small samples include broker
+authorization, MCP initialization/ping and cleanup; they read no private content
+and started no app, model or audio device. They establish a measured reduction in
+repeated metadata setup on this machine, without establishing recall, speech,
+full-runtime RAM or competitive latency. Exact source hashes and raw samples are
+preserved in the task evidence.
+
+The alternative is retaining HTTP clients or initialized MCP sessions across
+turns. That would also extend socket and session ownership through interruption,
+scope expiry and Stop. Reusing only verified trust configuration removes the
+observed repeated setup cost while retaining the current per-read teardown model.
+Cold certificate loading remains synchronous; this change does not promise a hard
+first-read deadline.
+
 Recall now requires the gateway's per-result `_meta["starlight.memory.projection"]`
 binding with schema `starlight.memory.projection-result.v1`, lowercase 64-character
 projection/atom digests and an approved summary-only policy. The client validates
@@ -297,8 +326,9 @@ latency or RAM improvement has been measured. `observed_before_recall` is false
 and `result_binding_validated` is true for accepted metadata. The client keeps
 `recall_snapshot_verified` false because parsing reported digests does not verify
 manifest signatures, atom bytes or the deployed gateway's atomic snapshot loader.
-Gateway-owned signature verification and immutable per-result capture still need
-implementation/deployment acceptance; the owner candidate remains unapplied.
+Gateway-owned signature verification and immutable per-result capture are
+implemented in [Memory draft PR 29](https://github.com/frankxai/starlight-memory/pull/29).
+Deployment and live recall acceptance remain open.
 Queries must fit the gateway's 512 UTF-16 code-unit limit, including padding;
 malformed Unicode is rejected before spending a tool call.
 

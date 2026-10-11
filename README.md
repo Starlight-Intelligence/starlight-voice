@@ -184,6 +184,11 @@ scope replacement cancel those reads; authorization is checked before IO and aga
 before publishing a result. Late results from transports that suppress cancellation
 are discarded. Existing synchronous ledger reads still have no wall-clock guarantee.
 
+Repeated MCP reads reuse a lazily loaded verified certificate context, while each
+read retains its own HTTP client, bearer headers and MCP session cleanup. Discovery
+loads no certificates. This reduces repeated client setup cost; the first read
+still incurs cold setup, and metadata timings do not establish speech latency.
+
 The component comparison graph has an explicit OpenRouter REST speech option:
 set `STARLIGHT_TTS_ENGINE=openrouter-speech`, choose
 `STARLIGHT_TTS_MODEL=elevenlabs/eleven-v4-turbo` or
