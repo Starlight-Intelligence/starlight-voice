@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import math
+import struct
 
 import pytest
 
@@ -9,7 +11,13 @@ pytest.importorskip("pipecat")
 pytest.importorskip("aiortc")
 
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription  # noqa: E402
-from pipecat.frames.frames import LLMFullResponseStartFrame, LLMTextFrame  # noqa: E402
+from pipecat.frames.frames import (  # noqa: E402
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
+    TTSAudioRawFrame,
+    TTSStartedFrame,
+    TTSStoppedFrame,
+)
 from test_component_turns_pipecat import MarkerVAD, PassThrough, RecordingModel, RecordingSTT  # noqa: E402
 
 from starlight_voice import voice_loop  # noqa: E402
@@ -38,6 +46,12 @@ def test_actual_peer_negotiation_caption_delivery_and_owned_shutdown(monkeypatch
         caption = asyncio.Event()
         opened_channel = asyncio.Event()
         received = []
+        audio_tracks = []
+
+        @client.on("track")
+        def track_received(track):
+            if track.kind == "audio":
+                audio_tracks.append(track)
 
         @channel.on("open")
         def opened():
@@ -67,6 +81,21 @@ def test_actual_peer_negotiation_caption_delivery_and_owned_shutdown(monkeypatch
             await asyncio.wait_for(caption.wait(), 5)
             assert any(item.get("reset") is True for item in received)
             assert received[-1] == {"type": "component.caption", "text": "Synthetic reply"}
+            # Real audio packets/codecs, generated marker PCM only. No provider or device.
+            assert len(audio_tracks) == 1
+            tone = b"".join(struct.pack("<h", int(6000 * math.sin(2 * math.pi * 440 * sample / 24000)))
+                            for sample in range(4800))
+            await runtime.worker.queue_frames([TTSStartedFrame(), TTSAudioRawFrame(tone, 24000, 1), TTSStoppedFrame()])
+
+            async def receive_marker():
+                for _ in range(100):
+                    frame = await audio_tracks[0].recv()
+                    samples = frame.to_ndarray().astype("int32")
+                    if abs(samples).max() > 1000:
+                        return
+                raise AssertionError("Synthetic PCM did not reach the negotiated audio track")
+
+            await asyncio.wait_for(receive_marker(), 5)
             await manager.stop({"session_id": scope["session_id"]}, scope["capability"])
             assert bridge.session is None and manager.current is None
             assert runtime.peer is None and runtime.worker is None and runtime.task is None
