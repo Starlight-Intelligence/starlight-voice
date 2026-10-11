@@ -1,13 +1,15 @@
 """Component speech must use the same bounded tool authority as native speech."""
 
 import asyncio
+import io
+import json
 import sys
 from types import SimpleNamespace
 
 import pytest
 
 from starlight_voice.component_tools import READ_NAMES, ComponentReadTools
-from starlight_voice.native_bridge import BridgeError, NativeBridge
+from starlight_voice.native_bridge import BridgeError, NativeBridge, recent_run_summaries
 
 
 class Reader(NativeBridge):
@@ -94,6 +96,67 @@ def test_read_that_finishes_after_expiry_is_redacted():
         assert results[-1]["status"] == "unavailable" and "reference" not in results[-1]
         await tools.stop()
         assert tools.bridge.session is None
+    asyncio.run(run())
+
+
+def test_receipt_reads_bound_io_and_only_disclose_last_five_summaries(monkeypatch):
+    from starlight_voice.cognition import ledger
+
+    payload = b"unread private history" * 4000 + b"\n"
+    payload += b"\n".join(json.dumps({"status": f"run-{i}", "tier": "fast",
+                                      "objective": "private task", "credential": "private value"}).encode()
+                            for i in range(7))
+    payload += b"\ninvalid JSON\n[]\n"
+    reads = []
+
+    class Tail(io.BytesIO):
+        def read(self, size=-1):
+            reads.append((self.tell(), size))
+            assert size == 64 * 1024
+            return super().read(size)
+
+    class File:
+        def open(self, mode):
+            assert mode == "rb"
+            return Tail(payload)
+
+    monkeypatch.setattr(ledger, "runs_path", lambda: File())
+    assert recent_run_summaries() == [{"status": f"run-{i}", "tier": "fast"} for i in range(2, 7)]
+    assert reads == [(len(payload) - 64 * 1024, 64 * 1024)]
+
+
+def test_receipt_tail_discards_partial_record_and_tolerates_missing_file(monkeypatch, tmp_path):
+    from starlight_voice.cognition import ledger
+
+    path = tmp_path / "runs.jsonl"
+    monkeypatch.setattr(ledger, "runs_path", lambda: path)
+    assert recent_run_summaries() == []
+    valid = json.dumps({"status": "completed", "tier": "fast"}).encode()
+    # Tail starts with a valid-looking fragment of an oversized, invalid record.
+    path.write_bytes(b"x" * 70_000 + valid + b"\n" + b" " * (64 * 1024 - len(valid) - 1))
+    assert recent_run_summaries() == []
+    path.write_bytes(valid + b"\n")
+    assert recent_run_summaries() == [{"status": "completed", "tier": "fast"}]
+
+
+def test_component_receipt_tool_reads_actual_broker_metadata_without_private_fields(monkeypatch, tmp_path):
+    path = tmp_path / "runs.jsonl"
+    path.write_text(json.dumps({"status": "completed", "tier": "fast", "objective": "private task",
+                               "packet_id": "private id"}) + "\n", encoding="utf-8")
+    monkeypatch.setenv("STARLIGHT_RUNS_FILE", str(path))
+
+    async def run():
+        bridge = NativeBridge(observation_path=tmp_path / "absent-observations.jsonl")
+        tools, results = ComponentReadTools(bridge=bridge), []
+        tools.start()
+        params = parameters(results)
+        params.function_name, params.arguments = "recent_run_receipts", {}
+        await tools.handle(params)
+        assert results == [{"status": "ok", "runs": [{"status": "completed", "tier": "fast"}],
+                            "turn_observations": [], "voice_acceptance_verified": False,
+                            "instruction_authority": False}]
+        await tools.stop()
+        assert bridge.session is None
     asyncio.run(run())
 
 

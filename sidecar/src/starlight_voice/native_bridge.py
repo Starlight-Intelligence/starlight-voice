@@ -22,6 +22,36 @@ from pathlib import Path
 from .mcp_projection import LocalMcpReader, ProjectionUnavailable, local_mcp_endpoint, tool_text
 from .turn_observations import append_observation, recent_observations, validate_observation
 
+
+def recent_run_summaries() -> list[dict]:
+    """Read only a bounded ledger tail and disclose five typed summaries."""
+    from .cognition.ledger import runs_path
+
+    try:
+        with runs_path().open("rb") as handle:
+            handle.seek(0, 2)
+            start = max(0, handle.tell() - 64 * 1024)
+            handle.seek(start)
+            lines = handle.read(64 * 1024).splitlines()
+            if start:
+                lines = lines[1:]
+        summaries = []
+        for line in reversed(lines):
+            try:
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    continue
+                summaries.append({"status": str(record.get("status", "unknown"))[:40],
+                                  "tier": str(record.get("tier", "unknown"))[:8]})
+                if len(summaries) == 5:
+                    break
+            except (ValueError, TypeError):
+                continue
+        return list(reversed(summaries))
+    except OSError:
+        return []
+
+
 _MISSION_CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 
 
@@ -304,10 +334,7 @@ class NativeBridge:
         if name in {"dispatch_task", "request_approval"}:
             return {"status": "blocked", "reason": "Managed authenticated intake is not connected", "queued": False, "approved": False}
         if name == "recent_run_receipts":
-            from .cognition.ledger import read_runs
-
-            return {"status": "ok", "runs": [{"status": str(run.get("status", "unknown"))[:40],
-                                               "tier": str(run.get("tier", "unknown"))[:8]} for run in read_runs(5)],
+            return {"status": "ok", "runs": recent_run_summaries(),
                     "turn_observations": recent_observations(path=self.observation_path),
                     "voice_acceptance_verified": False}
         if name in {"sis_recall_projection", "project_context"}:

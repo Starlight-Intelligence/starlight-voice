@@ -43,6 +43,9 @@ native broker's strict argument validation, call-ID replay checks, 20-call budge
 fixed read endpoints and projection result binding. Local read authority expires
 after five minutes and mints no provider credential. It has no HTTP start route.
 Mission drafting, dispatch, approval and private-vault access are excluded.
+Recent receipts read at most the last 64 KiB of each local ledger and disclose
+five summaries, avoiding full dispatch-history allocation in the voice path.
+This byte bound does not establish a wall-clock disk-read or conversation deadline.
 
 Results are tool messages with `instruction_authority: false`; the system prompt
 treats them as untrusted reference data. Failed, expired or denied reads return a
