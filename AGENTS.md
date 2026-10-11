@@ -8,7 +8,7 @@ sections of `docs/ARCHITECTURE-2026-10-10.md` before changing those paths.
   component graph. Native browser voice requires no local speech model.
 - Keep sidecar imports, configuration discovery and headless assembly safe without
   optional audio/model dependencies. The local component conversation requires
-  speech boundaries; its `voice-vad` extra is optional and explicitly selected.
+  speech boundaries; load its detector only when local component audio is selected.
 - The native broker can produce unsaved mission drafts. Component tools allow
   scoped reads only. Neither route admits coding work, grants approval or launches
   a harness. Reuse the existing managed intake before claiming execution.

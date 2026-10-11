@@ -16,14 +16,11 @@ native = [
 ]
 voice = [
   # Pipecat 1.0+ orchestrating CLOUD services + local mic/speaker I/O. No GPU/CUDA.
-  # Local component sessions additionally select `voice-vad` for speech boundaries.
-  # Browser native voice uses provider turn detection and does not need either extra.
+  # Local component sessions load the SDK's bundled Silero analyzer for speech boundaries.
+  # Native browser voice uses provider turn detection and does not need this runtime.
   "pipecat-ai[groq,elevenlabs,cartesia,openrouter]>=1.3,<2",
   "pyaudio>=0.2.14",            # PortAudio/WASAPI local mic capture + speaker playback (needed even cloud-first)
   "websockets>=15",            # asyncio client + explicit proxy control for dialogue streaming
-]
-voice-vad = [
-  "pipecat-ai[silero]>=1.3,<2",  # optional local speech detection; no local STT/TTS or smart-turn model
 ]
 voice-turn = [
   "pipecat-ai[silero,local-smart-turn-v3]>=1.0,<2",  # auto turn-detection + barge-in (later phase; may pull torch)

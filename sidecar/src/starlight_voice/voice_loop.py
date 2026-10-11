@@ -133,7 +133,7 @@ def _live_vad_analyzer():
     except ImportError:
         raise adapters.VoiceDepsUnavailable(
             "Component microphone conversation needs optional Silero voice detection. "
-            "Install: uv pip install -e .[voice,voice-vad,providers]. "
+            "Install: uv pip install -e .[voice,providers]. "
             "Native browser conversation does not need this extra."
         ) from None
     return SileroVADAnalyzer()
@@ -155,10 +155,7 @@ def build_graph(settings: Settings | None = None, *, with_transport: bool):
 
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.processors.aggregators.llm_context import LLMContext
-    from pipecat.processors.aggregators.llm_response_universal import (
-        LLMContextAggregatorPair,
-        LLMUserAggregatorParams,
-    )
+    from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 
     from .component_tools import READ_INSTRUCTIONS, bind_component_tools
 
@@ -175,7 +172,12 @@ def build_graph(settings: Settings | None = None, *, with_transport: bool):
             "content": READ_INSTRUCTIONS,
         }], tools=tools,
     )
-    pair = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(vad_analyzer=vad))
+    if with_transport:
+        from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
+
+        pair = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(vad_analyzer=vad))
+    else:
+        pair = LLMContextAggregatorPair(context)
 
     transport = None
     head: list = []

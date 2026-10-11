@@ -145,8 +145,8 @@ To deploy just the landing site statically, publish the `site/` directory as-is.
 ## Configuration
 
 The standalone local component conversation needs speech boundaries for Groq's
-segmented transcription. Install its optional `voice-vad` extra together with
-`voice` and `providers` before an authorized microphone run. The graph binds
+segmented transcription. Its existing `voice`/`providers` runtime supplies the
+Silero analyzer; no additional extra is required. An authorized local run binds
 Silero voice detection to the user aggregator; headless graph assembly and native
 browser voice do not load it. The existing shell does not supply push-to-talk
 events to this graph. Voice detection quality, interruption and its RAM footprint

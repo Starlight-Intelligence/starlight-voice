@@ -437,9 +437,10 @@ The standalone Groq/OpenRouter/ElevenLabs graph now binds optional Silero voice
 detection to `LLMUserAggregatorParams` when local audio is selected. Groq's
 segmented STT requires VAD start/stop events. The former graph supplied neither
 an analyzer nor working shell push-to-talk events, so constructing its services
-could succeed without producing a transcription turn. The separate `voice-vad`
-extra makes that local runtime dependency explicit; headless construction and
-native provider conversation keep it unloaded. The SDK regression passes marker
+could succeed without producing a transcription turn. Both supported SDK versions
+already include the analyzer and ONNX runtime; no extra package is required.
+Headless construction and native provider conversation keep the analyzer unloaded.
+The SDK regression checks marker
 PCM through actual VAD control, segmented STT and user-context aggregation using
 deterministic services, with no model, provider or audio device. It establishes
 frame wiring, not Silero accuracy, audible interruption, live latency or RAM.
