@@ -10,6 +10,8 @@ import asyncio
 import math
 from collections.abc import AsyncIterable, AsyncIterator
 
+from ..http_transport import verified_context
+
 
 class SpeechError(RuntimeError):
     """Redacted synthesis failure; no provider body, credential or prompt escapes."""
@@ -61,6 +63,7 @@ class OpenRouterSpeech:
                 async with httpx.AsyncClient(
                     trust_env=False, follow_redirects=False, timeout=min(self.timeout_s, 5),
                     transport=self._transport,
+                    verify=verified_context() if self._transport is None else True,
                 ) as client:
                     async with client.stream(
                         "POST", "https://openrouter.ai/api/v1/audio/speech",

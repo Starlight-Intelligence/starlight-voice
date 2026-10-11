@@ -188,6 +188,9 @@ Repeated MCP reads reuse a lazily loaded verified certificate context, while eac
 read retains its own HTTP client, bearer headers and MCP session cleanup. Discovery
 loads no certificates. This reduces repeated client setup cost; the first read
 still incurs cold setup, and metadata timings do not establish speech latency.
+The optional OpenRouter REST speech adapter reuses the same verified trust
+configuration and retains per-sentence HTTP/response closure. Its provider
+synthesis latency and any audible benefit still require live measurement.
 
 The component comparison graph has an explicit OpenRouter REST speech option:
 set `STARLIGHT_TTS_ENGINE=openrouter-speech`, choose

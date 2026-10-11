@@ -311,6 +311,14 @@ observed repeated setup cost while retaining the current per-read teardown model
 Cold certificate loading remains synchronous; this change does not promise a hard
 first-read deadline.
 
+The optional OpenRouter REST speech adapter had the same per-sentence HTTP client
+setup pattern. It now uses this lazy verified trust configuration too, while closing
+each sentence's client/response and keeping credentials separate. Synthetic HTTP
+and real Pipecat SDK fixtures verify PCM delivery and interrupted stream closure.
+No provider request was made for this refinement; REST synthesis latency and any
+audible benefit remain unmeasured. Native speech and direct ElevenLabs WebSocket
+defaults are unchanged.
+
 Recall now requires the gateway's per-result `_meta["starlight.memory.projection"]`
 binding with schema `starlight.memory.projection-result.v1`, lowercase 64-character
 projection/atom digests and an approved summary-only policy. The client validates

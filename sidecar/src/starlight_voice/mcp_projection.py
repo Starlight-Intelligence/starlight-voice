@@ -10,22 +10,12 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
-from functools import lru_cache
 from urllib.parse import urlsplit
+
+from .http_transport import verified_context
 
 MAX_RESPONSE = 64 * 1024
 PROTOCOL_VERSIONS = {"2025-03-26", "2025-06-18", "2025-11-25"}
-
-
-@lru_cache(maxsize=1)
-def _verified_context():
-    # HTTPX's default verified CA bundle, loaded only on a real read. Retain
-    # trust configuration, not clients, sockets, sessions or bearer credentials.
-    import ssl
-
-    import certifi
-
-    return ssl.create_default_context(cafile=certifi.where())
 
 
 def local_mcp_endpoint(url: str) -> bool:
@@ -73,7 +63,7 @@ class LocalMcpReader:
         }
         async with httpx.AsyncClient(
             transport=self.transport, trust_env=False, follow_redirects=False, timeout=self.deadline_s,
-            verify=_verified_context() if self.transport is None else True,
+            verify=verified_context() if self.transport is None else True,
         ) as client:
             async def request(method: str, params: dict | None, request_id: int | None):
                 nonlocal session_id, in_flight

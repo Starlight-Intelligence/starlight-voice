@@ -36,6 +36,47 @@ def build(handler, **kwargs):
                             model="elevenlabs/eleven-v4-turbo", transport=httpx.MockTransport(handler), **kwargs)
 
 
+def test_repeated_speech_keeps_verified_trust_and_closes_separate_clients(monkeypatch):
+    import ssl
+
+    original = httpx.AsyncClient
+    clients, contexts, requests, streams = [], [], [], []
+
+    def client(*args, **kwargs):
+        context = kwargs["verify"]
+        assert isinstance(context, ssl.SSLContext)
+        assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
+        assert context.cert_store_stats()["x509_ca"] > 0
+        assert kwargs["trust_env"] is False and kwargs["follow_redirects"] is False
+
+        def handler(request):
+            requests.append(request)
+            stream = AudioStream([b"\x01\x00"])
+            streams.append(stream)
+            return httpx.Response(200, headers={"Content-Type": "audio/pcm"}, stream=stream)
+
+        kwargs["transport"] = httpx.MockTransport(handler)
+        instance = original(*args, **kwargs)
+        clients.append(instance)
+        contexts.append(context)
+        return instance
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+
+    async def run():
+        for index, token in enumerate(("first-speech-key", "second-speech-key")):
+            speech = OpenRouterSpeech(api_key=token, voice_id="george", model="elevenlabs/eleven-v4-turbo")
+            assert len(clients) == index  # Construction starts no HTTP/certificate work.
+            assert [chunk async for chunk in speech.stream(text("Hello."))] == [b"\x01\x00"]
+
+    asyncio.run(run())
+    assert clients[0] is not clients[1] and all(item.is_closed for item in clients)
+    assert contexts[0] is contexts[1] and all(stream.closed for stream in streams)
+    assert [request.headers["authorization"] for request in requests] == [
+        "Bearer first-speech-key", "Bearer second-speech-key",
+    ]
+
+
 @pytest.mark.parametrize("model", sorted(OpenRouterSpeech.MODELS))
 def test_request_and_fragmented_pcm_are_exact_and_response_is_closed(model):
     async def run():
