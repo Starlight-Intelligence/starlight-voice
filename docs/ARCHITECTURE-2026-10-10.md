@@ -410,6 +410,15 @@ comparison remains necessary before selecting a quality/latency winner.
 
 ## Remaining work
 
+The legacy text dispatcher now follows the same execution boundary as the native
+and component tools. It returns handoff previews and append-only audit outcomes;
+it cannot launch a CLI. `--live` returns `unavailable` with a nonzero exit code,
+while always-ask requests remain blocked. Every packet is marked preview and
+unadmitted, and every risk tier still requires admission. Spoken text confirms
+that no harness has started. Retrying preserves historical audit records without
+creating pending approval or queued work. This closes an unmanaged launch path;
+it does not implement managed execution or establish live acceptance.
+
 Select and listen to an account voice through the ElevenLabs component pipeline;
 connect durable dispatch/approval and verified memory deployment; add trusted
 playback, billing and reviewed quality evidence to turn receipts. Verify real

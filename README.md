@@ -118,6 +118,12 @@ are refused; gateway adoption and signed snapshot verification remain pending.
 Dispatch/approval remain blocked, and real voice quality, interruption, latency
 and RAM need validation.
 
+The text CLI's `dispatch` command also builds previews only. Its legacy direct
+CLI launch path has been removed. `dispatch --live` reports `unavailable` and
+exits with code 2; always-ask requests remain `hard-blocked`. No harness starts
+and no task is queued. Suggested fleet targets and keyword tiers are unverified
+preview hints. Connecting the accepted managed controller remains open.
+
 The native client can be imported without mounting controls. An embedding page can
 set a same-origin `brokerPrefix` and `workletPath`, then explicitly mount and dispose
 its controls. Disposal stops owned media and removes page listeners, including when
