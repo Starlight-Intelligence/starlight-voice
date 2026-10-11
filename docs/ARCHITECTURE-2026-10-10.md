@@ -319,7 +319,8 @@ proposal endpoint. Deployment and real audio acceptance remain open.
 
 ## Published cost comparison
 
-Rates checked on 10 October 2026. Taxes, account credits, subscription minimums,
+Direct-provider rates checked on 10 October 2026; OpenRouter rates added on
+11 October 2026. Taxes, account credits, subscription minimums,
 tools and text-model usage can change the total. No invoice or live usage is proved.
 
 | Route | Published unit price | What it covers |
@@ -328,11 +329,27 @@ tools and text-model usage can change the total. No invoice or live usage is pro
 | ElevenLabs v4 Turbo | $0.011 per 1,000 characters until October 12; regular $0.04 | Generated speech only |
 | ElevenLabs v3 Conversational or Flash/Turbo | $0.04 per 1,000 characters | Generated speech only |
 | ElevenLabs Scribe v2 Realtime | $0.39 per input hour | Streaming transcription only |
+| OpenRouter Eleven v4 Turbo | $0.020 per 1,000 characters through October 19 at 8am PT | Generated speech only; the displayed rate already includes the launch discount |
+| OpenRouter Scribe v2 | $0.000031 per input second through the same launch offer | Recorded-audio REST transcription; realtime WebSocket Scribe is not offered on this route |
 | OpenAI gpt-realtime-2.1 | Audio input $32/output $64 per million tokens; text input $4/output $24 | Modality-specific token usage |
 
 Sources: [Grok pricing](https://docs.x.ai/developers/pricing),
 [ElevenLabs API pricing](https://elevenlabs.io/pricing/api),
 [OpenAI pricing](https://developers.openai.com/api/docs/pricing).
+OpenRouter sources: [v4 Turbo price](https://openrouter.ai/elevenlabs/eleven-v4-turbo),
+[Scribe v2 price](https://openrouter.ai/elevenlabs/scribe-v2) and
+[launch offer and transport scope](https://openrouter.ai/blog/announcements/elevenlabs-on-openrouter/).
+
+The public OpenRouter catalogue uses `output_modalities=speech` for these TTS
+models; `audio` and the unfiltered chat catalogue do not list them. The live
+speech catalogue and model endpoint returned v4 Turbo's $0.000020 per-character
+price. Apply no second 50% reduction to that price. Catalogue visibility does not
+establish account authentication or inference entitlement.
+
+At the published OpenRouter offer rates, 10,000 generated characters plus 1,200
+recorded input seconds calculate to $0.2372 before text inference, tools, account
+fees and taxes. This includes batch transcription, not streaming Scribe. Its
+latency and interruption behavior are not interchangeable with the native route.
 
 For an illustrative workload with 10,000 generated characters and 20 minutes of
 streaming transcription, v4 Turbo plus Scribe costs $0.24 during the promotion or
