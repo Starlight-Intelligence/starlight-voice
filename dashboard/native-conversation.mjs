@@ -465,6 +465,11 @@ export function mountNativeConversation(doc = document, options = {}) {
   const bind = (target, name, handler) => {
     target.addEventListener(name, handler); listeners.push(() => target.removeEventListener(name, handler));
   };
+  const placeholder = (control, label) => {
+    const option = doc.createElement("option");
+    option.value = ""; option.textContent = label; option.disabled = true; option.selected = true;
+    control.replaceChildren(); control.append(option); control.value = "";
+  };
   const conversation = new NativeConversation({ ...options,
     onState: (state) => {
       if (disposed) return;
@@ -484,7 +489,7 @@ export function mountNativeConversation(doc = document, options = {}) {
     },
   });
   start.disabled = stop.disabled = mute.disabled = provider.disabled = voice.disabled = true;
-  provider.replaceChildren(); voice.replaceChildren();
+  placeholder(provider, "Checking providers…"); placeholder(voice, "Checking voices…");
   bind(start, "click", () => { caption.textContent = ""; conversation.start(provider.value, voice.value); });
   bind(stop, "click", () => conversation.stop());
   bind(mute, "click", () => conversation.mute());
@@ -495,6 +500,7 @@ export function mountNativeConversation(doc = document, options = {}) {
     if (disposed) return;
     disposed = true; discovery.abort(); listeners.splice(0).forEach((remove) => remove());
     start.disabled = stop.disabled = mute.disabled = provider.disabled = voice.disabled = true;
+    provider.replaceChildren(); voice.replaceChildren();
     caption.textContent = "";
     if (mission) { mission.textContent = ""; mission.hidden = true; }
     await conversation.stop();
@@ -506,6 +512,7 @@ export function mountNativeConversation(doc = document, options = {}) {
     if (!response.ok) throw new Error("Voice broker unavailable");
     const caps = await response.json();
     if (disposed) return;
+    provider.replaceChildren();
     let choices = [];
     for (const spec of caps.providers) {
       const option = doc.createElement("option"); option.value = spec.id;
@@ -527,7 +534,14 @@ export function mountNativeConversation(doc = document, options = {}) {
       else if (conversation.stopping) conversation.state("Stopping…");
       else if (conversation.cleanupFailed) conversation.state(CLEANUP_REQUIRED, true);
     }
-    else { status.textContent = "Configure XAI_API_KEY or OPENAI_API_KEY on the server to enable native voice"; }
-  } catch { if (!disposed) status.textContent = "Native voice broker unavailable"; } })();
+    else {
+      placeholder(provider, "No provider configured"); placeholder(voice, "Voice unavailable");
+      status.textContent = "Configure XAI_API_KEY or OPENAI_API_KEY on the server to enable native voice";
+    }
+  } catch { if (!disposed) {
+    configured = false;
+    placeholder(provider, "Provider unavailable"); placeholder(voice, "Voice unavailable");
+    conversation.state("Native voice broker unavailable", true);
+  } } })();
   return conversation;
 }

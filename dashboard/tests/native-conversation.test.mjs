@@ -641,6 +641,76 @@ test("an unconfigured provider stays disabled across pagehide without requesting
   await conversation.dispose();
 });
 
+function selectedPlaceholder(control, label) {
+  assert.equal(control.disabled, true);
+  assert.equal(control.value, "");
+  assert.equal(control.children.length, 1);
+  assert.equal(control.children[0].textContent, label);
+  assert.equal(control.children[0].value, "");
+  assert.equal(control.children[0].selected, true);
+}
+
+test("pending provider discovery has labelled disabled choices without requesting audio", async () => {
+  const page = fakeVoiceDocument(), discovery = deferred(); let captures = 0;
+  const conversation = mountNativeConversation(page.doc, { lifecycleTarget: page.lifecycle,
+    media: { getUserMedia: () => captures++ }, fetchFn: () => discovery.promise,
+  });
+  try {
+    selectedPlaceholder(page.elements.voiceProvider, "Checking providers…");
+    selectedPlaceholder(page.elements.voiceVoice, "Checking voices…");
+    assert.equal(page.elements.voiceStart.disabled, true);
+    assert.equal(captures, 0);
+  } finally {
+    await conversation.dispose();
+    discovery.resolve({ ok: false });
+    await conversation.mountReady;
+  }
+});
+
+for (const providers of [[], [{ id: "grok", configured: false, voices: ["ara"] },
+  { id: "openai", configured: false, voices: ["marin", "cedar"] }]]) {
+  test(`no configured provider leaves labelled unavailable choices (${providers.length} records)`, async () => {
+    const page = fakeVoiceDocument(); let captures = 0;
+    const conversation = mountNativeConversation(page.doc, { lifecycleTarget: page.lifecycle,
+      media: { getUserMedia: () => captures++ },
+      fetchFn: async () => ({ ok: true, json: async () => ({ providers }) }),
+    });
+    try {
+      await conversation.mountReady;
+      selectedPlaceholder(page.elements.voiceProvider, "No provider configured");
+      selectedPlaceholder(page.elements.voiceVoice, "Voice unavailable");
+      page.lifecycle.emit("pagehide");
+      assert.equal(page.elements.voiceStart.disabled, true);
+      assert.equal(captures, 0);
+    } finally { await conversation.dispose(); }
+  });
+}
+
+for (const fetchFn of [async () => ({ ok: false }), async () => { throw new Error("private network detail"); }]) {
+  test("discovery failure labels both choices and permits a clean configured remount", async () => {
+    const page = fakeVoiceDocument();
+    const conversation = mountNativeConversation(page.doc, { lifecycleTarget: page.lifecycle, fetchFn });
+    await conversation.mountReady;
+    try {
+      selectedPlaceholder(page.elements.voiceProvider, "Provider unavailable");
+      selectedPlaceholder(page.elements.voiceVoice, "Voice unavailable");
+      assert.equal(page.elements.voiceStart.disabled, true);
+      assert.equal(page.elements.voiceStatus.textContent, "Native voice broker unavailable");
+    } finally { await conversation.dispose(); }
+    const recovered = mountNativeConversation(page.doc, { lifecycleTarget: page.lifecycle,
+      fetchFn: async () => ({ ok: true, json: async () => ({ providers: [{ id: "grok", configured: true, voices: ["ara", "orion"] }] }) }),
+    });
+    try {
+      await recovered.mountReady;
+      assert.equal(page.elements.voiceStart.disabled, false);
+      assert.equal(page.elements.voiceProvider.children.length, 1);
+      assert.equal(page.elements.voiceProvider.children[0].value, "grok");
+      assert.deepEqual(page.elements.voiceVoice.children.map(option => option.value), ["ara", "orion"]);
+      assert.equal(page.count(), 7);
+    } finally { await recovered.dispose(); }
+  });
+}
+
 test("only bounded broker drafts reach the host; model output cannot confer authority", async () => {
   const drafts = [], id = "507e8b48-bb41-48b0-a58b-263349b7fdcb";
   let output = { schema: "voice.mission-draft.v1", status: "draft", queued: false, approved: false,
