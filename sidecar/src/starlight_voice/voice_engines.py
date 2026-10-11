@@ -32,7 +32,7 @@ class Variant:
 VARIANTS: dict[str, Variant] = {
     "component": Variant(
         "component", "Component pipeline (A)", "Groq STT + OpenRouter LLM + ElevenLabs TTS",
-        "OPENROUTER_API_KEY", "router interception; component function tools not registered",
+        "OPENROUTER_API_KEY", "five scoped read tools through the existing broker; dispatch/approval unavailable",
         "component experiment; first playable audio and cost unmeasured",
     ),
     "openai-realtime": Variant(

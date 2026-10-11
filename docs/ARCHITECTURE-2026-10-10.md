@@ -34,6 +34,38 @@ The component default now pairs `openai/gpt-oss-120b` with the existing Cerebras
 provider pin, replacing an incompatible GPT-5/Cerebras selection. This is a
 configured route, not a measured performance result. [Provider listing](https://openrouter.ai/provider/cerebras)
 
+## Component read tools
+
+The component graph registers `portfolio_status`, `recent_run_receipts`,
+`node_health`, `sis_recall_projection` and `project_context` with Pipecat's text
+LLM service and advertises their schemas through `LLMContext`. It reuses the
+native broker's strict argument validation, call-ID replay checks, 20-call budget,
+fixed read endpoints and projection result binding. Local read authority expires
+after five minutes and mints no provider credential. It has no HTTP start route.
+Mission drafting, dispatch, approval and private-vault access are excluded.
+
+Results are tool messages with `instruction_authority: false`; the system prompt
+treats them as untrusted reference data. Failed, expired or denied reads return a
+redacted unavailable result. The gateway must supply accepted result-binding
+metadata for memory recall. Gateway deployment, signature verification and live
+provider use remain open acceptance items.
+
+The serious alternative was the graph's prior automatic recall on transcription.
+That path stored reference text in frame metadata that the LLM context never
+consumed, while still making a private gateway request. Explicit tool calls remove
+those hidden reads and let the model request an approved summary when needed.
+This establishes usable context wiring, not measured answer quality or latency.
+
+Start creates local read authority without opening a device or provider socket.
+Interruption cancels pending reads and invalidates their result generation. End,
+Cancel and cleanup release the scope before accepting another result. The same
+scope remains available after an interruption for the next turn; it is not renewed.
+Focused synthetic tests cover validation, replay, expiry, budget and late-result
+suppression. Hosted Pipecat 1.3.0 and 1.12.0 tests exercise the real SDK executor,
+context aggregator and lifecycle without audio devices or provider requests.
+Their exact revision and results belong in the task evidence; live audio and
+provider continuation still require account and device acceptance.
+
 ## OpenRouter REST speech comparison
 
 The component graph can explicitly select `STARLIGHT_TTS_ENGINE=openrouter-speech`

@@ -125,48 +125,6 @@ def _router_processor():
     return RouterProcessor()
 
 
-def should_recall(route_tier: str | None) -> bool:
-    """Tier-conditioned memory gate: FAST conversational turns SKIP retrieval to protect the
-    first-audio SLA; deliberation / cli-agent / browser turns pull context. Pure + testable."""
-    from .cognition import RouteTier
-
-    return route_tier != RouteTier.FAST.value
-
-
-def with_reference_context(metadata: dict | None, block: str) -> dict:
-    """Keep retrieved data outside policy roles until a typed tool-result adapter admits it."""
-    return {**(metadata or {}), "reference_context": {
-        "content": block, "trust": "untrusted", "source": "sis-memory",
-    }}
-
-
-def _memory_processor():
-    """Bound async recall to 120 ms and preserve it as reference metadata.
-
-    This frame metadata is not yet consumed by the LLM context aggregator. A registered
-    read tool must replace it before claiming provider-visible memory grounding.
-    """
-    from pipecat.frames.frames import TranscriptionFrame
-    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-
-    from .memory import MemoryGatewayClient
-
-    client = MemoryGatewayClient.autodiscover()
-
-    class MemoryContextProcessor(FrameProcessor):
-        async def process_frame(self, frame, direction: FrameDirection):
-            await super().process_frame(frame, direction)
-            if isinstance(frame, TranscriptionFrame) and getattr(frame, "text", "").strip():
-                tier = (getattr(frame, "metadata", {}) or {}).get("route_tier")
-                if should_recall(tier) and client.available():
-                    block = await client.as_context_block_async(frame.text)
-                    if block:
-                        frame.metadata = with_reference_context(getattr(frame, "metadata", {}), block)
-            await self.push_frame(frame, direction)
-
-    return MemoryContextProcessor()
-
-
 def build_graph(settings: Settings | None = None, *, with_transport: bool):
     """Assemble the Pipecat pipeline.
 
@@ -184,22 +142,21 @@ def build_graph(settings: Settings | None = None, *, with_transport: bool):
     from pipecat.processors.aggregators.llm_context import LLMContext
     from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 
+    from .component_tools import READ_INSTRUCTIONS, bind_component_tools
+
     stt = _stt_service(settings)
     llm = _llm_service(settings)
     tts = _tts_service(settings)
     router_proc = _router_processor()
+    tools, tool_lifecycle = bind_component_tools(llm)
 
     context = LLMContext(
         messages=[{
             "role": "system",
-            "content": (
-                "You are Starlight, Frank's voice operator. Lead with the action. "
-                "Reply in <=2 short sentences. No hedging, no preamble."
-            ),
-        }]
+            "content": READ_INSTRUCTIONS,
+        }], tools=tools,
     )
     pair = LLMContextAggregatorPair(context)
-    memory_proc = _memory_processor()
 
     transport = None
     head: list = []
@@ -212,7 +169,7 @@ def build_graph(settings: Settings | None = None, *, with_transport: bool):
         tail = [transport.output()]
 
     pipeline = Pipeline(
-        [*head, stt, router_proc, memory_proc, pair.user(), llm, tts, *tail, pair.assistant()]
+        [*head, stt, router_proc, tool_lifecycle, pair.user(), llm, tts, *tail, pair.assistant()]
     )
     return pipeline, transport
 

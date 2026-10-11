@@ -132,6 +132,13 @@ To deploy just the landing site statically, publish the `site/` directory as-is.
 
 ## Configuration
 
+The component graph exposes five read tools through the existing native broker:
+portfolio status, recent receipts, node health, approved memory recall and project
+context. Tool results enter the conversation as untrusted reference data. A local
+read scope lasts five minutes and allows 20 calls; interruption cancels pending
+reads, and Stop releases the scope. The graph does not draft, dispatch or approve
+work. Memory recall still requires a gateway with accepted result-binding metadata.
+
 The component comparison graph has an explicit OpenRouter REST speech option:
 set `STARLIGHT_TTS_ENGINE=openrouter-speech`, choose
 `STARLIGHT_TTS_MODEL=elevenlabs/eleven-v4-turbo` or

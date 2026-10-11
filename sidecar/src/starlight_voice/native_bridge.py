@@ -68,6 +68,8 @@ TOOLS = [
         ("request_approval", "Blocked: no authenticated approval recorder is connected. Never grants approval.", QUERY_SCHEMA),
     ]
 ]
+READ_ONLY_TOOL_NAMES = frozenset({"portfolio_status", "recent_run_receipts", "node_health",
+                                "sis_recall_projection", "project_context"})
 
 
 class BridgeError(Exception):
@@ -88,6 +90,7 @@ class Session:
     observations: dict[int, str] = field(default_factory=dict)
     provider: str = ""
     voice: str = ""
+    allowed_tools: frozenset[str] | None = None
 
 
 async def mint_secret(provider: str, voice: str, *, transport=None) -> dict:
@@ -139,6 +142,15 @@ class NativeBridge:
         self.session: Session | None = None
         self.minting = False
         self.last_start = float("-inf")
+
+    def open_read_scope(self) -> dict:
+        """Internal component-graph authority; no audio credential or HTTP start route."""
+        with self.lock:
+            if self.minting or (self.session and self.session.expires > self.clock()):
+                raise BridgeError("A read scope is already active", 429)
+            self.session = Session(str(uuid.uuid4()), secrets.token_urlsafe(32), self.clock() + 300,
+                                   allowed_tools=READ_ONLY_TOOL_NAMES)
+            return {"session_id": self.session.session_id, "capability": self.session.capability}
 
     def capabilities(self) -> dict:
         return {"providers": [
@@ -205,6 +217,8 @@ class NativeBridge:
         fingerprint = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()
         with self.lock:
             session = self.authorize(payload, capability)
+            if session.provider not in PROVIDERS:
+                raise BridgeError("Local read scopes do not accept native turn observations", 403)
             sequence = metadata["sequence"]
             if sequence in session.observations:
                 if session.observations[sequence] != fingerprint:
@@ -257,6 +271,8 @@ class NativeBridge:
                                                 separators=(",", ":")).encode()).hexdigest()
         with self.lock:
             session = self.authorize(payload, capability)
+            if session.allowed_tools is not None and name not in session.allowed_tools:
+                raise BridgeError("Tool is outside this read scope", 403)
             if call_id in session.calls:
                 if session.call_fingerprints[call_id] != fingerprint:
                     raise BridgeError("Tool call id belongs to a different request", 409)
