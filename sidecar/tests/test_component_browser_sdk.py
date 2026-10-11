@@ -10,12 +10,12 @@ pytest.importorskip("aiortc")
 
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription  # noqa: E402
 from pipecat.frames.frames import LLMFullResponseStartFrame, LLMTextFrame  # noqa: E402
+from test_component_turns_pipecat import MarkerVAD, PassThrough, RecordingModel, RecordingSTT  # noqa: E402
 
 from starlight_voice import voice_loop  # noqa: E402
 from starlight_voice.component_session import ComponentSessions  # noqa: E402
 from starlight_voice.config import Settings  # noqa: E402
 from starlight_voice.native_bridge import NativeBridge  # noqa: E402
-from test_component_turns_pipecat import MarkerVAD, PassThrough, RecordingModel, RecordingSTT  # noqa: E402
 
 
 def test_actual_peer_negotiation_caption_delivery_and_owned_shutdown(monkeypatch):

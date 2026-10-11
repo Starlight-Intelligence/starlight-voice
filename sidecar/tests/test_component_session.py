@@ -179,7 +179,7 @@ class ComponentValidationTests(unittest.TestCase):
         with patch.dict(os.environ, keys, clear=True):
             for ready in (False, True):
                 spec = component_spec(Settings(tts_voice_id="fixture-voice"), present=lambda name: True,
-                                      sdk_ready=lambda: ready)
+                                      sdk_ready=lambda ready=ready: ready)
                 self.assertEqual(spec["configured"], ready)
                 self.assertFalse(spec["runtime_verified"])
 
