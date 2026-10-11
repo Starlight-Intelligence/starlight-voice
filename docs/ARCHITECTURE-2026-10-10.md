@@ -475,6 +475,9 @@ its cleanup again; runtime close and slot release follow only after it finishes.
 This uses [asyncio.wait](https://docs.python.org/3.12/library/asyncio-task.html#asyncio.wait),
 which returns pending tasks without adding timeout cancellation. The allowance
 does not guarantee scheduler timing or completion of SDK resources.
+Owned cleanup failures are consumed even if the last Stop caller disconnects,
+so an unobserved task does not log a raw resource exception. The failed job and
+its handles remain owned; consuming the exception does not mark cleanup complete.
 Failure holds the reservation and retained handles for Retry cleanup.
 Expiry also retries cleanup; it cannot silently admit a replacement native
 session while component resources remain. The async host loop persists after

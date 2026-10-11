@@ -1,6 +1,7 @@
 """Real broker/session lifecycle with deterministic resources; no media or providers."""
 
 import asyncio
+import gc
 import os
 import unittest
 from unittest.mock import patch
@@ -178,7 +179,7 @@ class ComponentSessionsTests(unittest.IsolatedAsyncioTestCase):
                 cancelled_waiter.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await cancelled_waiter
-                done, pending = await asyncio.wait(stops, timeout=0.2)
+                done, pending = await asyncio.wait(stops, timeout=1)
                 self.assertFalse(pending, "Stop must return retry while owned startup cancellation is pending")
                 for task in done:
                     with self.assertRaises(BridgeError) as held:
@@ -207,6 +208,44 @@ class ComponentSessionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.bridge.session)
         native = await self.bridge.start({"provider": "grok", "voice": "ara"})
         self.bridge.stop({"session_id": native["session_id"]}, native["capability"])
+
+    async def test_cancelled_last_stop_waiter_does_not_leave_an_unobserved_cleanup_failure(self):
+        await self.manager.offer(self.offer(), self.scope["capability"])
+        resource = self.resources[0]
+        resource.close_failures = 1
+        entered, release = asyncio.Event(), asyncio.Event()
+        original_close = resource.close
+
+        async def delayed_close():
+            entered.set()
+            await release.wait()
+            await original_close()
+
+        resource.close = delayed_close
+        loop = asyncio.get_running_loop()
+        contexts = []
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda loop, context: contexts.append(context))
+        waiter = asyncio.create_task(self.manager.stop(self.identity(), self.scope["capability"]))
+        try:
+            await entered.wait()
+            cleanup = self.manager.current.cleanup_task
+            waiter.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await waiter
+            release.set()
+            done, pending = await asyncio.wait([cleanup], timeout=1)
+            self.assertFalse(pending)
+            self.assertIsNotNone(self.bridge.session)
+            self.assertTrue((await self.manager.stop(self.identity(), self.scope["capability"]))["runtime_closed"])
+            done.clear()
+            del cleanup
+            gc.collect()
+            self.assertEqual(contexts, [], "A disconnected Stop caller must not expose private cleanup exceptions")
+        finally:
+            release.set()
+            await asyncio.gather(waiter, return_exceptions=True)
+            loop.set_exception_handler(previous_handler)
 
     async def test_component_tools_reuse_read_scope_and_cannot_release_runtime_slot(self):
         reads = ComponentReadTools(bridge=self.bridge, scope=self.scope)

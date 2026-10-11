@@ -180,6 +180,8 @@ class ComponentSessions:
         session.closing = True
         if session.cleanup_task is None or session.cleanup_task.done():
             session.cleanup_task = asyncio.create_task(self._cleanup(session))
+            # A disconnected final waiter must not log raw resource exceptions.
+            session.cleanup_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
         try:
             await asyncio.shield(session.cleanup_task)
         except asyncio.CancelledError:
