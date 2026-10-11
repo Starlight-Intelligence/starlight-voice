@@ -468,7 +468,14 @@ Component turns do not write native-provider observation receipts.
 The same read capability and call budget enter the graph. Generic native Stop
 cannot release a component reservation. Component Stop first revokes reads,
 cancels owned startup, then closes pipeline and peer with independent cleanup
-jobs. Failure holds the reservation and retained handles for Retry cleanup.
+jobs. Startup cancellation has a two-second wait allowance. If its own cleanup
+is still pending, Stop returns a retryable failure and retains the same startup
+task, runtime and reservation. A retry waits for that task without cancelling
+its cleanup again; runtime close and slot release follow only after it finishes.
+This uses [asyncio.wait](https://docs.python.org/3.12/library/asyncio-task.html#asyncio.wait),
+which returns pending tasks without adding timeout cancellation. The allowance
+does not guarantee scheduler timing or completion of SDK resources.
+Failure holds the reservation and retained handles for Retry cleanup.
 Expiry also retries cleanup; it cannot silently admit a replacement native
 session while component resources remain. The async host loop persists after
 ordinary Stop and joins when the existing server closes. A failed host shutdown

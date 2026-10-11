@@ -1,8 +1,10 @@
 """Bounded fixture loop tests: no server, network, SDK, microphone or model."""
 
 import asyncio
+import concurrent.futures
 import threading
 import unittest
+from unittest.mock import patch
 
 from starlight_voice.component_host import ComponentHost
 from starlight_voice.component_session import ComponentSessions
@@ -117,6 +119,54 @@ class ComponentHostTests(unittest.TestCase):
         self.assertTrue(self.host.bridge.session.runtime_owned)
         resource.close = original
         self.host.close()
+        self.assertFalse(thread.is_alive())
+        self.assertIsNone(self.host.bridge.session)
+
+    def test_shutdown_during_slow_startup_cleanup_returns_and_retries_the_same_owner(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        class SlowStartup(Resource):
+            async def initialize(self, sdp):
+                entered.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    await release.wait()
+                    raise
+
+        def factory(*args):
+            resource = SlowStartup(*args)
+            self.resources.append(resource)
+            return resource
+
+        session = self.host.call("start", {"provider": "elevenlabs", "voice": "fixture-voice"})
+        self.host.manager.factory = factory
+        offer = asyncio.run_coroutine_threadsafe(self.host.manager.offer(
+            {"session_id": session["session_id"], "type": "offer", "sdp": SDP},
+            session["capability"]), self.host.loop)
+        asyncio.run_coroutine_threadsafe(entered.wait(), self.host.loop).result(timeout=2)
+        loop, thread, manager, owned = self.host.loop, self.host.thread, self.host.manager, self.host.manager.current
+        try:
+            with patch("starlight_voice.component_session._STARTUP_CLOSE_SECONDS", 0.01):
+                with self.assertRaisesRegex(BridgeError, "cleanup incomplete"):
+                    self.host.close()
+                self.assertIs(self.host.loop, loop)
+                self.assertIs(self.host.manager, manager)
+                self.assertIs(manager.current, owned)
+                self.assertTrue(thread.is_alive())
+                self.assertTrue(self.host.bridge.session.runtime_owned)
+                self.assertFalse(self.resources[0].closed)
+        finally:
+            loop.call_soon_threadsafe(release.set)
+            async def startup_finished():
+                await asyncio.gather(owned.offer_task, return_exceptions=True)
+            asyncio.run_coroutine_threadsafe(startup_finished(), loop).result(timeout=2)
+            try:
+                offer.result(timeout=2)
+            except concurrent.futures.CancelledError:
+                pass
+            self.host.close()
+        self.assertTrue(self.resources[0].closed)
         self.assertFalse(thread.is_alive())
         self.assertIsNone(self.host.bridge.session)
 

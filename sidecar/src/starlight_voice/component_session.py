@@ -14,6 +14,8 @@ from importlib.metadata import PackageNotFoundError, version
 from .config import Settings
 from .native_bridge import BridgeError, NativeBridge
 
+_STARTUP_CLOSE_SECONDS = 2
+
 
 def _present(name: str) -> bool:
     try:
@@ -192,8 +194,15 @@ class ComponentSessions:
                 if self.bridge.session and self.bridge.session.session_id == session.scope["session_id"]:
                     self.bridge.session.expires = 0
             session.revoked = True
-        if session.offer_task is not None and not session.offer_task.done():
-            session.offer_task.cancel()
+        if session.offer_task is not None:
+            if not session.offer_task.done():
+                # Do not interrupt startup's own cancellation cleanup on every retry.
+                if not session.offer_task.cancelling():
+                    session.offer_task.cancel()
+                _, pending = await asyncio.wait([session.offer_task], timeout=_STARTUP_CLOSE_SECONDS)
+                if pending:
+                    raise BridgeError("Component startup cleanup is incomplete; retry Stop", 503)
+            # Consume a terminal startup error even when its HTTP waiter was cancelled.
             await asyncio.gather(session.offer_task, return_exceptions=True)
         if session.runtime is not None:
             async with asyncio.timeout(5):

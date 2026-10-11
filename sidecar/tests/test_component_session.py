@@ -144,6 +144,70 @@ class ComponentSessionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.resources[0].close_calls, 1)
         self.assertIsNone(self.bridge.session)
 
+    async def test_slow_startup_cancellation_returns_retry_without_releasing_or_interrupting_cleanup(self):
+        entered, cancelling, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        cancellations = []
+
+        async def delayed_cancellation(sdp):
+            entered.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancellations.append(True)
+                cancelling.set()
+                await release.wait()
+                raise
+
+        def factory(*args):
+            resource = Resource(*args)
+            resource.initialize = delayed_cancellation
+            self.resources.append(resource)
+            return resource
+
+        self.manager.factory = factory
+        waiter = asyncio.create_task(self.manager.offer(self.offer(), self.scope["capability"]))
+        await entered.wait()
+        owned = self.manager.current
+        stops = []
+        try:
+            with patch("starlight_voice.component_session._STARTUP_CLOSE_SECONDS", 0.01, create=True):
+                stops = [asyncio.create_task(self.manager.stop(self.identity(), self.scope["capability"]))
+                         for _ in range(3)]
+                await cancelling.wait()
+                cancelled_waiter = stops.pop()
+                cancelled_waiter.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await cancelled_waiter
+                done, pending = await asyncio.wait(stops, timeout=0.2)
+                self.assertFalse(pending, "Stop must return retry while owned startup cancellation is pending")
+                for task in done:
+                    with self.assertRaises(BridgeError) as held:
+                        task.result()
+                    self.assertEqual(held.exception.status, 503)
+                self.assertIs(self.manager.current, owned)
+                self.assertTrue(owned.cleanup_task.done())
+                self.assertFalse(owned.offer_task.done())
+                self.assertEqual(self.resources[0].close_calls, 0)
+                with self.assertRaises(BridgeError):
+                    self.bridge.authorize(self.identity(), self.scope["capability"])
+                self.clock[0] = 301
+                with self.assertRaises(BridgeError) as slot_held:
+                    await self.bridge.start({"provider": "grok", "voice": "ara"})
+                self.assertEqual(slot_held.exception.status, 429)
+                with self.assertRaises(BridgeError):
+                    await self.manager.stop(self.identity(), self.scope["capability"])
+                self.assertEqual(cancellations, [True])
+                self.assertFalse(owned.offer_task.done(), "Retry must not cancel startup cleanup a second time")
+        finally:
+            release.set()
+            await asyncio.gather(waiter, *stops, return_exceptions=True)
+        result = await self.manager.stop(self.identity(), self.scope["capability"])
+        self.assertTrue(result["runtime_closed"])
+        self.assertEqual(self.resources[0].close_calls, 1)
+        self.assertIsNone(self.bridge.session)
+        native = await self.bridge.start({"provider": "grok", "voice": "ara"})
+        self.bridge.stop({"session_id": native["session_id"]}, native["capability"])
+
     async def test_component_tools_reuse_read_scope_and_cannot_release_runtime_slot(self):
         reads = ComponentReadTools(bridge=self.bridge, scope=self.scope)
         reads.start()
