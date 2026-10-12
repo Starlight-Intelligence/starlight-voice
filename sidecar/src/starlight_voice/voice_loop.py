@@ -16,6 +16,7 @@ API verified live against pipecat-ai 1.3.0 (service/transport/context-aggregator
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
@@ -254,9 +255,23 @@ async def run(settings: Settings | None = None) -> int:
     settings = settings or Settings.from_env()
     pipeline, _ = build_graph(settings, with_transport=True)
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
+    async def failed_cleanup():
+        # SDK setup can fail before its normal worker teardown begins. Attempt
+        # processor cleanup without turning a fatal exit into an unbounded wait.
+        try:
+            async with asyncio.timeout(5):
+                await pipeline.cleanup()
+        except Exception:
+            print("[voice] pipeline cleanup incomplete; stop this process before restarting", file=sys.stderr)
+
     try:
         await PipelineRunner().run(task)
         return 0
-    except Exception as e:  # pragma: no cover - needs a live mic + runner to exercise
-        print(f"[voice] fatal pipeline error: {type(e).__name__}: {e}", file=sys.stderr)
+    except asyncio.CancelledError:
+        await failed_cleanup()
+        raise
+    except Exception:
+        # Provider exceptions can include credentials, transcripts or URLs.
+        print("[voice] fatal pipeline error; check provider setup and device access", file=sys.stderr)
+        await failed_cleanup()
         return 1

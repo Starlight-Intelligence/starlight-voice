@@ -1,18 +1,28 @@
 # Dot-source to configure the current shell. This never starts an app or requests inference.
 param(
-  [string] $ProjectId = '5578966b-0c74-4253-9a3c-bace21d97b24',
-  [ValidateSet('dev', 'staging', 'prod')] [string] $Environment = 'dev'
+  [string] $ProjectId = '',
+  [string] $Environment = 'dev',
+  [string] $InfisicalDomain = 'https://eu.infisical.com/api'
 )
 
+# Keep an explicit invalid dedicated value on failure. Removing the variable
+# would permit the runtime to fall back to an existing shared OpenRouter key.
+$env:STARLIGHT_VOICE_OPENROUTER_API_KEY = '*not found*'
+$env:STARLIGHT_VOICE_PROFILE = 'grok-openrouter'
 $voiceKey = $null
 $voiceClient = $null
 $voiceHandler = $null
 $voiceResponse = $null
 $voiceRequest = $null
 try {
+  if ($ProjectId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or
+      $Environment -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$' -or
+      $InfisicalDomain -notin @('https://eu.infisical.com/api', 'https://app.infisical.com/api')) {
+    throw 'Supply your Infisical project, environment and supported cloud domain'
+  }
   $voiceOutput = & infisical secrets get STARLIGHT_VOICE_OPENROUTER_API_KEY `
     "--projectId=$ProjectId" "--env=$Environment" --path=/ `
-    --domain=https://eu.infisical.com/api --plain --silent `
+    "--domain=$InfisicalDomain" --plain --silent `
     --expand=false --include-imports=false --telemetry=false 2>&1
   if ($LASTEXITCODE -ne 0) { throw 'Infisical retrieval failed' }
   $voiceKey = ($voiceOutput -join "`n").Trim()

@@ -105,3 +105,38 @@ def test_grok_cannot_retain_an_incompatible_cerebras_pin(monkeypatch):
     monkeypatch.setenv("STARLIGHT_VOICE_OPENROUTER_API_KEY", "fixture")
     with pytest.raises(adapters.VoiceDepsUnavailable, match="xai provider"):
         _llm_service(Settings(llm_model="x-ai/grok-4.7"))
+
+
+@pytest.mark.parametrize("failure", ["provider", "cleanup", "cancel"])
+def test_failed_local_runner_cleans_graph_and_redacts_provider_details(monkeypatch, capsys, failure):
+    import asyncio
+
+    from starlight_voice import voice_loop
+
+    calls = []
+
+    async def cleanup():
+        calls.append("cleanup")
+        if failure == "cleanup":
+            raise RuntimeError("private-cleanup-credential")
+
+    async def runner(self, task):
+        calls.append("run")
+        if failure == "cancel":
+            raise asyncio.CancelledError
+        raise RuntimeError("private-provider-credential-and-transcript")
+
+    monkeypatch.setattr(voice_loop, "build_graph", lambda *args, **kw: (SimpleNamespace(cleanup=cleanup), None))
+    monkeypatch.setitem(sys.modules, "pipecat.pipeline.runner", SimpleNamespace(
+        PipelineRunner=type("Runner", (), {"run": runner})))
+    monkeypatch.setitem(sys.modules, "pipecat.pipeline.task", SimpleNamespace(
+        PipelineTask=lambda *args, **kw: object(), PipelineParams=SimpleNamespace))
+    if failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(voice_loop.run(Settings()))
+    else:
+        assert asyncio.run(voice_loop.run(Settings())) == 1
+    assert calls == ["run", "cleanup"]
+    output = capsys.readouterr()
+    assert "private-" not in output.out + output.err
+    assert ("cleanup incomplete" in output.err) is (failure == "cleanup")

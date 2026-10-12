@@ -40,7 +40,35 @@ What is still pending:
 - signed installer
 - legacy SIS/Arcanea task migration scripts
 
-## Quick Start
+## Quick start
+
+For browser voice, Python 3.12 or newer and your own provider account are enough.
+The Rust tray is optional. Choose a workspace you own and run:
+
+```powershell
+git clone https://github.com/frankxai/starlight-voice.git starlight-voice
+cd starlight-voice
+py -3.12 -m venv .venv
+. ./.venv/Scripts/Activate.ps1
+python -m pip install -e "./sidecar[native]"
+```
+
+For native Grok or OpenAI, configure your own `XAI_API_KEY` or `OPENAI_API_KEY`
+in this shell through your credential store. For Grok through OpenRouter, install
+`python -m pip install -e "./sidecar[voice-browser]"`, set
+`STARLIGHT_VOICE_PROFILE=grok-openrouter`, and inject your normal inference key as
+`STARLIGHT_VOICE_OPENROUTER_API_KEY`. Check its allowance and your account credit.
+The OpenRouter route includes a local speech detector; native browser voice has
+no local speech model. Neither route requires Command Center or Frank's Infisical
+project. Memory tools require your own separately configured signed gateway.
+
+When you intend to start a conversation, run `python dashboard/server.py` from
+the repository root and open `http://127.0.0.1:8765/dashboard/cockpit.html`. Start
+requests microphone permission; Stop ends the session. Installing dependencies
+and selecting a profile do not start microphone capture. Live customer installation
+and provider/audio acceptance remain pending.
+
+### Optional Windows tray
 
 Prerequisites:
 
@@ -51,8 +79,6 @@ Prerequisites:
 Clone and build:
 
 ```powershell
-git clone https://github.com/frankxai/starlight-voice.git C:\Users\frank\starlight-voice
-cd C:\Users\frank\starlight-voice
 cargo build --release -p starlight-voice-tauri
 ```
 
@@ -162,12 +188,16 @@ To load only the dedicated credential from Infisical into the current PowerShell
 session, dot-source the existing setup helper:
 
 ```powershell
-. ./scripts/load-openrouter-voice.ps1
+. ./scripts/load-openrouter-voice.ps1 -ProjectId '<your-project-uuid>' -Environment dev
 ```
 
 It checks key metadata and configures the shell without starting the app, writing
-the bearer to disk or making inference requests. It does not load the management
-key. The dedicated instance key created on 11 October authenticates but has a $0
+the bearer to disk or making inference requests. It reads the root secret named
+`STARLIGHT_VOICE_OPENROUTER_API_KEY` in your project. The default domain is Infisical
+EU; pass `-InfisicalDomain https://app.infisical.com/api` for its other supported
+cloud domain. It does not load the management key. A failed reload invalidates
+the dedicated runtime value, preventing reuse of a stale key or fallback to the
+shared key. The dedicated instance key created on 11 October authenticates but has a $0
 cap, including BYOK, and expires on 18 October. Funding the account alone does not
 raise that cap; set an approved finite allowance before playback and replace an
 expired key through Infisical. Existing shared credentials were preserved.
