@@ -13,7 +13,7 @@ def create_openrouter_transcription_stt(*, api_key: str, model: str, transcripti
 
     class OpenRouterTranscriptionService(SegmentedSTTService):
         def __init__(self):
-            super().__init__(settings=STTSettings(model=model), sample_rate=16000)
+            super().__init__(settings=STTSettings(model=model, language=None), sample_rate=16000)
 
         async def run_stt(self, audio):
             await self.start_processing_metrics()

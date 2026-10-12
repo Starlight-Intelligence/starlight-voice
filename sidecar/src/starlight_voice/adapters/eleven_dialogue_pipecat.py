@@ -25,7 +25,7 @@ def create_dialogue_tts(*, api_key: str, voice_id: str, model: str,
     class ElevenDialogueTTSService(TTSService):
         def __init__(self):
             super().__init__(
-                settings=TTSSettings(model=model, voice=voice_id), sample_rate=48000,
+                settings=TTSSettings(model=model, voice=voice_id, language=None), sample_rate=48000,
                 text_aggregation_mode=TextAggregationMode.SENTENCE,
                 push_start_frame=True, push_stop_frames=True,
                 # The base queue must remain alive during the synthesis deadline.

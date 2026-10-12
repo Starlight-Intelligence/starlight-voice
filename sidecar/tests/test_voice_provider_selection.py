@@ -98,7 +98,9 @@ def test_grok_profile_uses_one_dedicated_key_for_all_three_stages(monkeypatch):
     assert _tts_service(settings) == {"api_key": "dedicated-fixture", "model": "x-ai/grok-voice-tts-1.0", "voice_id": "ara"}
     model = _llm_service(settings)
     assert model.api_key == "dedicated-fixture" and model._settings.model == "x-ai/grok-4.7"
-    assert model._settings.extra == {"provider": {"order": ["xai"], "allow_fallbacks": False}, "reasoning": {"effort": "low"}}
+    assert model._settings.extra == {"extra_body": {
+        "provider": {"order": ["xai"], "allow_fallbacks": False}, "reasoning": {"effort": "low"},
+    }}
 
 
 def test_grok_cannot_retain_an_incompatible_cerebras_pin(monkeypatch):

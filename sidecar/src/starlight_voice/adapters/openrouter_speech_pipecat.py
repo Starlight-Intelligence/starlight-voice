@@ -18,7 +18,7 @@ def create_openrouter_speech_tts(*, api_key: str, voice_id: str, model: str,
     class OpenRouterSpeechTTSService(TTSService):
         def __init__(self):
             super().__init__(
-                settings=TTSSettings(model=model, voice=voice_id), sample_rate=OpenRouterSpeech.SAMPLE_RATE,
+                settings=TTSSettings(model=model, voice=voice_id, language=None), sample_rate=OpenRouterSpeech.SAMPLE_RATE,
                 text_aggregation_mode=TextAggregationMode.SENTENCE,
                 push_start_frame=True, push_stop_frames=True, stop_frame_timeout_s=timeout_s + 3,
             )

@@ -62,17 +62,20 @@ def _llm_service(settings: Settings):
     from pipecat.services.openrouter.llm import OpenRouterLLMService
 
     provider = {"order": [settings.llm_fast_provider], "allow_fallbacks": False}
-    extra = {"provider": provider}
+    body = {"provider": provider}
     if settings.llm_reasoning_effort:
-        extra["reasoning"] = {"effort": settings.llm_reasoning_effort}
+        body["reasoning"] = {"effort": settings.llm_reasoning_effort}
+    # Pipecat expands Settings.extra as OpenAI client keyword arguments.
+    # OpenRouter-specific JSON belongs in extra_body, not in those keywords.
+    extra = {"extra_body": body}
     svc = OpenRouterLLMService(
         api_key=api_key,
         settings=OpenRouterLLMService.Settings(model=settings.llm_model, extra=extra),
     )
     landed = getattr(getattr(svc, "_settings", None), "extra", None) or {}
-    if not landed.get("provider"):
+    if landed.get("extra_body", {}).get("provider") != provider:
         raise RuntimeError(
-            "OpenRouter provider-pin DROPPED (svc._settings.extra has no 'provider') — "
+            "OpenRouter provider-pin DROPPED (svc._settings.extra_body has no exact provider pin) — "
             "FAST-tier TTFT SLA would silently break. Check the pipecat Settings API."
         )
     return svc

@@ -50,8 +50,8 @@ def test_grok_profile_pin_reasoning_and_key_reach_the_actual_sdk_without_request
         service = _llm_service(Settings.from_env())
         try:
             assert service._settings.model == "x-ai/grok-4.7"
-            assert service._settings.extra["provider"] == {"order": ["xai"], "allow_fallbacks": False}
-            assert service._settings.extra["reasoning"] == {"effort": "low"}
+            assert service._settings.extra["extra_body"]["provider"] == {"order": ["xai"], "allow_fallbacks": False}
+            assert service._settings.extra["extra_body"]["reasoning"] == {"effort": "low"}
             assert service._client.api_key == "synthetic-inference-fixture"
             assert str(service._client.base_url) == "https://openrouter.ai/api/v1/"
         finally:

@@ -39,6 +39,6 @@ def test_provider_pin_lands_on_the_service_not_just_settings_string() -> None:
     from starlight_voice.voice_loop import _llm_service
 
     svc = _llm_service(Settings.from_env())
-    extra = getattr(svc._settings, "extra", {}) or {}
+    extra = (getattr(svc._settings, "extra", {}) or {}).get("extra_body", {})
     assert extra.get("provider", {}).get("order") == ["cerebras"]
     assert extra["provider"]["allow_fallbacks"] is False  # no transcript egress on near-miss
