@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,7 +45,23 @@ STATIC: dict[str, tuple[Path, str]] = {
     "/dashboard/cockpit.html": (DASH / "cockpit.html", _CT_HTML),
     "/dashboard/cockpit.css": (DASH / "cockpit.css", _CT_CSS),
     "/dashboard/cockpit.js": (DASH / "cockpit.js", _CT_JS),
+    "/dashboard/native-conversation.mjs": (DASH / "native-conversation.mjs", _CT_JS),
+    "/dashboard/pcm-capture.js": (DASH / "pcm-capture.js", _CT_JS),
 }
+
+
+def trusted_host(host: str, port: int) -> bool:
+    return host in {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+
+def trusted_voice_request(headers, port: int) -> bool:
+    host = headers.get("Host", "")
+    return (
+        trusted_host(host, port) and headers.get("Origin") == f"http://{host}"
+        and headers.get("Content-Type", "").lower() == "application/json"
+        and not headers.get("Transfer-Encoding")
+        and headers.get("Sec-Fetch-Site", "same-origin") == "same-origin"
+    )
 
 
 def _system_status() -> dict:
@@ -61,13 +78,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def end_headers(self) -> None:  # security headers on every response
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Permissions-Policy", "microphone=(self), camera=()")
+        self.send_header("Cache-Control", "no-store")
+        if self.path.startswith("/dashboard/"):
+            self.send_header("Content-Security-Policy", (
+                "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
+                "font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; "
+                "connect-src 'self' wss://api.x.ai https://api.openai.com; media-src 'self' blob:; "
+                "worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+            ))
         super().end_headers()
 
     def log_message(self, *args) -> None:  # quiet by default
         pass
 
     def do_GET(self) -> None:
+        if not trusted_host(self.headers.get("Host", ""), self.server.server_address[1]):
+            self.send_error(403, "Untrusted host")
+            return
         path = urlparse(self.path).path
+        if path == "/voice/capabilities":
+            capabilities = self.server.voice_bridge.capabilities()
+            capabilities["providers"].append(self.server.component_host.capabilities())
+            self._json(200, capabilities)
+            return
         if path == "/healthz":
             self._json(200, {"ok": True, "service": "starlight-voice-dashboard"})
             return
@@ -81,6 +116,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._serve_file(*entry)
 
     def do_POST(self) -> None:
+        if urlparse(self.path).path in {"/voice/session", "/voice/tool", "/voice/stop", "/voice/observation", "/voice/component-offer"}:
+            self._voice_post()
+            return
         if urlparse(self.path).path != "/ratings":
             self.send_error(404, "Not found")
             return
@@ -115,6 +153,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         self._json(200, {"ok": True, "path": str(RATINGS)})
 
+    def _voice_post(self) -> None:
+        import asyncio
+
+        from starlight_voice.native_bridge import BridgeError
+
+        if not trusted_voice_request(self.headers, self.server.server_address[1]):
+            self._json(403, {"error": "Voice requests require the exact local origin and JSON content type"})
+            self.close_connection = True
+            return
+        if not self.server.voice_slots.acquire(blocking=False):
+            self._json(429, {"error": "Voice broker is busy"})
+            self.close_connection = True
+            return
+        try:
+            lengths = self.headers.get_all("Content-Length", [])
+            limit = 64 * 1024 if urlparse(self.path).path == "/voice/component-offer" else 8192
+            if len(lengths) != 1 or not lengths[0].isdigit() or not 0 < int(lengths[0]) <= limit:
+                self.close_connection = True
+                raise BridgeError("Voice request exceeds the body limit", 413)
+            self.connection.settimeout(3)
+            raw = self.rfile.read(int(lengths[0]))
+            if len(raw) != int(lengths[0]):
+                raise BridgeError("Voice request is incomplete")
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise BridgeError("A JSON object is required")
+            capability = self.headers.get("X-Voice-Capability", "")
+            bridge = self.server.voice_bridge
+            path = urlparse(self.path).path
+            if path == "/voice/session":
+                result = (self.server.component_host.call("start", payload) if payload.get("provider") == "elevenlabs"
+                          else asyncio.run(bridge.start(payload)))
+            elif path == "/voice/component-offer":
+                result = self.server.component_host.call("offer", payload, capability)
+            elif path == "/voice/tool":
+                result = asyncio.run(bridge.tool(payload, capability))
+            elif path == "/voice/observation":
+                result = bridge.observe(payload, capability)
+            else:
+                result = self.server.component_host.try_stop(payload, capability)
+                if result is None:
+                    result = bridge.stop(payload, capability)
+            self._json(200, result)
+        except BridgeError as error:
+            self._json(error.status, {"error": str(error)})
+        except (ValueError, UnicodeDecodeError):
+            self._json(400, {"error": "Invalid JSON"})
+        except Exception:  # noqa: BLE001 - redact infrastructure failures at the browser boundary
+            self._json(503, {"error": "Voice request unavailable"})
+        finally:
+            self.server.voice_slots.release()
+
     def _serve_file(self, file_path: Path, content_type: str) -> None:
         try:
             body = file_path.read_bytes()
@@ -137,16 +227,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+class VoiceServer(ThreadingHTTPServer):
+    def server_close(self):
+        try:
+            if hasattr(self, "component_host"):
+                self.component_host.close()
+        finally:
+            super().server_close()
+
+
 def make_server(port: int | None = None) -> ThreadingHTTPServer:
+    from starlight_voice.component_host import ComponentHost
+    from starlight_voice.native_bridge import NativeBridge
+
     port = port if port is not None else int(os.environ.get("STARLIGHT_DASHBOARD_PORT", "8765"))
-    return ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
+    server = VoiceServer(("127.0.0.1", port), DashboardHandler)
+    server.voice_bridge = NativeBridge()
+    server.component_host = ComponentHost(server.voice_bridge)
+    server.voice_slots = threading.BoundedSemaphore(4)
+    return server
 
 
 def main() -> None:
+    from starlight_voice.config import load_local_env
+
+    load_local_env()
     server = make_server()
     host, port = server.server_address
     print(f"Starlight Voice: http://{host}:{port}  (console at /dashboard/cockpit.html)")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

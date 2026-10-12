@@ -2,7 +2,8 @@
 
 Cloud-first per the 2026-06-15 decision: mic -> Groq STT -> OpenRouter LLM -> ElevenLabs TTS
 -> speakers, orchestrated by Pipecat entirely inside this Python sidecar. The Rust/Tauri
-shell only owns PTT + tray + lifecycle; audio never crosses the stdio IPC boundary.
+shell owns tray + lifecycle; audio never crosses the stdio IPC boundary. The local
+component conversation needs explicit voice detection to segment Groq transcription.
 
 The `CognitionRouter` rides the graph as a FrameProcessor (observes tier on each final
 transcript) — it classifies, it does NOT call the LLM or pick the engine (that stays in
@@ -15,16 +16,23 @@ API verified live against pipecat-ai 1.3.0 (service/transport/context-aggregator
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
 from . import adapters
 from .cognition import CognitionRouter
-from .config import Settings
+from .config import Settings, openrouter_inference_key
 
 
 def _stt_service(settings: Settings):
     """Cloud STT. Default Groq Whisper (live GROQ_API_KEY)."""
+    if settings.stt_engine == "openrouter-transcription":
+        from .adapters.openrouter_transcription_pipecat import create_openrouter_transcription_stt
+
+        return create_openrouter_transcription_stt(api_key=openrouter_inference_key(), model=settings.stt_model)
+    if settings.stt_engine != "groq-openrouter":
+        raise adapters.VoiceDepsUnavailable(f"STT engine '{settings.stt_engine}' is not implemented in this graph")
     from pipecat.services.groq.stt import GroqSTTService
 
     return GroqSTTService(
@@ -44,27 +52,70 @@ def _llm_service(settings: Settings):
     the voice tier must NOT egress transcripts to an arbitrary slow upstream on a near-miss.
     Fails LOUD at build if the pin didn't land — never ship the SLA feature as a silent no-op.
     """
+    api_key = openrouter_inference_key()
+    if not api_key:
+        raise adapters.VoiceDepsUnavailable("OpenRouter text needs a normal inference key")
+    if settings.llm_model.startswith("x-ai/") and settings.llm_fast_provider != "xai":
+        raise adapters.VoiceDepsUnavailable("Grok text requires the xai provider pin")
+    if settings.llm_reasoning_effort not in {"", "none", "low", "medium", "high", "xhigh"}:
+        raise adapters.VoiceDepsUnavailable("Select a supported explicit reasoning effort")
     from pipecat.services.openrouter.llm import OpenRouterLLMService
 
     provider = {"order": [settings.llm_fast_provider], "allow_fallbacks": False}
+    body = {"provider": provider}
+    if settings.llm_reasoning_effort:
+        body["reasoning"] = {"effort": settings.llm_reasoning_effort}
+    # Pipecat expands Settings.extra as OpenAI client keyword arguments.
+    # OpenRouter-specific JSON belongs in extra_body, not in those keywords.
+    extra = {"extra_body": body}
     svc = OpenRouterLLMService(
-        api_key=os.environ.get("OPENROUTER_API_KEY"),
-        settings=OpenRouterLLMService.Settings(model=settings.llm_model, extra={"provider": provider}),
+        api_key=api_key,
+        settings=OpenRouterLLMService.Settings(model=settings.llm_model, extra=extra),
     )
     landed = getattr(getattr(svc, "_settings", None), "extra", None) or {}
-    if not landed.get("provider"):
+    if landed.get("extra_body", {}).get("provider") != provider:
         raise RuntimeError(
-            "OpenRouter provider-pin DROPPED (svc._settings.extra has no 'provider') — "
+            "OpenRouter provider-pin DROPPED (svc._settings.extra_body has no exact provider pin) — "
             "FAST-tier TTFT SLA would silently break. Check the pipecat Settings API."
         )
     return svc
 
 
 def _tts_service(settings: Settings):
-    """Cloud TTS. Default ElevenLabs Flash v2.5 streaming (live ELEVENLABS_API_KEY)."""
+    """Select the provider protocol before constructing an optional Pipecat service."""
+    if settings.tts_engine == "openrouter-speech":
+        from .adapters.openrouter_speech import OpenRouterSpeech
+
+        if settings.tts_model not in OpenRouterSpeech.MODELS:
+            raise adapters.VoiceDepsUnavailable("Select an explicit supported OpenRouter speech model")
+        api_key = openrouter_inference_key()
+        if not api_key.strip() or api_key.strip() == "*not found*" or not settings.tts_voice_id.strip():
+            raise adapters.VoiceDepsUnavailable(
+                "OpenRouter speech needs an inference OPENROUTER_API_KEY and explicit STARLIGHT_TTS_VOICE_ID"
+            )
+        from .adapters.openrouter_speech_pipecat import create_openrouter_speech_tts
+
+        return create_openrouter_speech_tts(api_key=api_key, voice_id=settings.tts_voice_id,
+                                           model=settings.tts_model)
+    if settings.tts_engine != "elevenlabs":
+        raise adapters.VoiceDepsUnavailable(f"TTS engine '{settings.tts_engine}' is not implemented in this graph")
+    if settings.tts_model in {"eleven_v4_turbo", "eleven_v3_conversational"}:
+        api_key = os.environ.get("ELEVENLABS_API_KEY", "")
+        if not api_key.strip() or not settings.tts_voice_id.strip():
+            raise adapters.VoiceDepsUnavailable(
+                "Dialogue TTS needs ELEVENLABS_API_KEY and an explicit STARLIGHT_TTS_VOICE_ID"
+            )
+        from .adapters.eleven_dialogue_pipecat import create_dialogue_tts
+
+        return create_dialogue_tts(api_key=api_key, voice_id=settings.tts_voice_id,
+                                   model=settings.tts_model)
+    if settings.tts_model not in {"eleven_flash_v2_5", "eleven_flash_v2", "eleven_multilingual_v2"}:
+        raise adapters.VoiceDepsUnavailable(
+            f"TTS model '{settings.tts_model}' is not implemented in this graph"
+        )
     from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 
-    kwargs = {"api_key": os.environ.get("ELEVENLABS_API_KEY"), "model": "eleven_flash_v2_5"}
+    kwargs = {"api_key": os.environ.get("ELEVENLABS_API_KEY"), "model": settings.tts_model}
     if settings.tts_voice_id:
         kwargs["voice_id"] = settings.tts_voice_id
     return ElevenLabsTTSService(**kwargs)
@@ -93,50 +144,34 @@ def _router_processor():
     return RouterProcessor()
 
 
-def should_recall(route_tier: str | None) -> bool:
-    """Tier-conditioned memory gate: FAST conversational turns SKIP retrieval to protect the
-    first-audio SLA; deliberation / cli-agent / browser turns pull context. Pure + testable."""
-    from .cognition import RouteTier
-
-    return route_tier != RouteTier.FAST.value
-
-
-def _memory_processor(context):
-    """FrameProcessor that grounds each non-FAST turn with SIS memory recall (degrade-first).
-
-    Reads the route_tier the RouterProcessor stamped, queries the gateway with a hard timeout,
-    and injects results as an UNTRUSTED system message into the shared LLMContext for the turn.
-    A dead/missing gateway -> empty recall -> the turn proceeds context-less (never stalls).
-    """
-    from pipecat.frames.frames import TranscriptionFrame
-    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-
-    from .memory import MemoryGatewayClient
-
-    client = MemoryGatewayClient.autodiscover()
-
-    class MemoryContextProcessor(FrameProcessor):
-        async def process_frame(self, frame, direction: FrameDirection):
-            await super().process_frame(frame, direction)
-            if isinstance(frame, TranscriptionFrame) and getattr(frame, "text", "").strip():
-                tier = (getattr(frame, "metadata", {}) or {}).get("route_tier")
-                if should_recall(tier) and client.available():
-                    block = client.as_context_block(frame.text)
-                    if block:
-                        context.add_message({"role": "system", "content": block})
-            await self.push_frame(frame, direction)
-
-    return MemoryContextProcessor()
+def _live_vad_analyzer():
+    """Load voice detection only for an explicitly started local component session."""
+    try:
+        from pipecat.audio.vad.silero import SileroVADAnalyzer
+    except ImportError:
+        raise adapters.VoiceDepsUnavailable(
+            "Component microphone conversation needs optional Silero voice detection. "
+            "Install: uv pip install -e .[voice,providers]. "
+            "Native browser conversation does not need this extra."
+        ) from None
+    return SileroVADAnalyzer()
 
 
-def build_graph(settings: Settings | None = None, *, with_transport: bool):
+def build_graph(settings: Settings | None = None, *, with_transport: bool,
+                transport=None, read_bridge=None, read_scope=None, reply_observer=None, own_resource=None):
     """Assemble the Pipecat pipeline.
 
     with_transport=False builds the service chain only (no mic/speaker) so the graph can be
-    validated headlessly. with_transport=True opens the local audio device for a live run.
+    validated headlessly. with_transport=True binds local audio and optional Silero VAD.
+    Groq's segmented STT requires VAD events; graph assembly alone is insufficient.
     Returns (pipeline, transport_or_None).
     """
+    if with_transport and transport is not None:
+        raise ValueError("Select local audio or an existing transport, not both")
+    if read_scope is not None and read_bridge is None:
+        raise ValueError("An external read scope needs its existing broker")
     settings = settings or Settings.from_env()
+    audio_enabled = with_transport or transport is not None
     # Fail early (with an actionable install hint) if a SELECTED engine's deps are missing —
     # replaces a former dead no-op loop. require() raises VoiceDepsUnavailable on absence.
     for engine in (settings.stt_engine, "openrouter", settings.tts_engine, "pipecat"):
@@ -146,35 +181,47 @@ def build_graph(settings: Settings | None = None, *, with_transport: bool):
     from pipecat.processors.aggregators.llm_context import LLMContext
     from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 
-    stt = _stt_service(settings)
-    llm = _llm_service(settings)
-    tts = _tts_service(settings)
+    from .component_tools import READ_INSTRUCTIONS, bind_component_tools
+
+    def owned(resource):
+        if own_resource is not None and resource is not None:
+            own_resource(resource)
+        return resource
+
+    vad = owned(_live_vad_analyzer()) if audio_enabled else None
+    stt = owned(_stt_service(settings))
+    llm = owned(_llm_service(settings))
+    tts = owned(_tts_service(settings))
     router_proc = _router_processor()
+    tools, tool_lifecycle = (bind_component_tools(llm, bridge=read_bridge, scope=read_scope)
+                             if read_bridge is not None else bind_component_tools(llm))
 
     context = LLMContext(
         messages=[{
             "role": "system",
-            "content": (
-                "You are Starlight, Frank's voice operator. Lead with the action. "
-                "Reply in <=2 short sentences. No hedging, no preamble."
-            ),
-        }]
+            "content": READ_INSTRUCTIONS,
+        }], tools=tools,
     )
-    pair = LLMContextAggregatorPair(context)
-    memory_proc = _memory_processor(context)  # grounds non-FAST turns from SIS memory (degrade-first)
+    if audio_enabled:
+        from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
 
-    transport = None
+        pair = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(vad_analyzer=vad))
+    else:
+        pair = LLMContextAggregatorPair(context)
+
     head: list = []
     tail: list = []
     if with_transport:
         from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
         transport = LocalAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True))
+    if transport is not None:
         head = [transport.input()]
         tail = [transport.output()]
 
     pipeline = Pipeline(
-        [*head, stt, router_proc, memory_proc, pair.user(), llm, tts, *tail, pair.assistant()]
+        [*head, stt, router_proc, tool_lifecycle, pair.user(), llm,
+         *([reply_observer] if reply_observer is not None else []), tts, *tail, pair.assistant()]
     )
     return pipeline, transport
 
@@ -211,9 +258,23 @@ async def run(settings: Settings | None = None) -> int:
     settings = settings or Settings.from_env()
     pipeline, _ = build_graph(settings, with_transport=True)
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
+    async def failed_cleanup():
+        # SDK setup can fail before its normal worker teardown begins. Attempt
+        # processor cleanup without turning a fatal exit into an unbounded wait.
+        try:
+            async with asyncio.timeout(5):
+                await pipeline.cleanup()
+        except Exception:
+            print("[voice] pipeline cleanup incomplete; stop this process before restarting", file=sys.stderr)
+
     try:
         await PipelineRunner().run(task)
         return 0
-    except Exception as e:  # pragma: no cover - needs a live mic + runner to exercise
-        print(f"[voice] fatal pipeline error: {type(e).__name__}: {e}", file=sys.stderr)
+    except asyncio.CancelledError:
+        await failed_cleanup()
+        raise
+    except Exception:
+        # Provider exceptions can include credentials, transcripts or URLs.
+        print("[voice] fatal pipeline error; check provider setup and device access", file=sys.stderr)
+        await failed_cleanup()
         return 1

@@ -39,7 +39,7 @@ body {
   background: linear-gradient(135deg, var(--voltage), var(--voltage-2));
   box-shadow: 0 0 28px var(--voltage-soft);
 }
-.eyebrow { margin: 0; font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--ink-dim); }
+.eyebrow { margin: 0; font-size: 12px; letter-spacing: 0.03em; color: var(--ink-dim); }
 h1 { margin: 2px 0 0; font-family: var(--display); font-weight: 600; font-size: 24px; letter-spacing: -0.01em; }
 h2 { margin: 0 0 14px; font-family: var(--display); font-weight: 600; font-size: 17px; }
 .muted { color: var(--ink-dim); font-weight: 400; font-size: 13px; font-family: var(--text); }
@@ -57,7 +57,7 @@ h2 { margin: 0 0 14px; font-family: var(--display); font-weight: 600; font-size:
 
 .live { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink-dim); z-index: 1; }
 .live .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-dim); transition: background var(--dur); }
-.live.ok .dot { background: var(--ok); box-shadow: 0 0 12px var(--ok); animation: pulse 2.4s infinite; }
+.live.ok .dot { background: var(--ok); }
 .live.err .dot { background: var(--stop); box-shadow: 0 0 12px var(--stop); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
@@ -70,7 +70,9 @@ h2 { margin: 0 0 14px; font-family: var(--display); font-weight: 600; font-size:
   min-height: 120px;
   transition: border-color var(--dur), box-shadow var(--dur), transform var(--dur);
 }
-.card:hover { border-color: var(--glass-line-bright); box-shadow: var(--shadow); transform: translateY(-2px); }
+@media (hover: hover) and (pointer: fine) {
+  .card:hover { border-color: var(--glass-line-bright); }
+}
 
 .kv { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; }
 .kv dt { color: var(--ink-dim); font-size: 13px; }
@@ -112,3 +114,24 @@ h2 { margin: 0 0 14px; font-family: var(--display); font-weight: 600; font-size:
 .foot-link { color: var(--ink-dim); font-family: var(--mono); }
 .foot-link:hover { color: var(--voltage-2); }
 .err { color: var(--stop); font-family: var(--mono); }
+
+.voice-card { grid-column: 1 / -1; padding: 26px; }
+.voice-heading { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; }
+.voice-heading h2 { font-size: 26px; margin-bottom: 10px; }
+.voice-intro { margin: 0 0 22px; max-width: 64ch; line-height: 1.6; color: var(--ink-dim); }
+.voice-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.voice-controls label { display: grid; gap: 7px; font-size: 13px; color: var(--ink-dim); }
+.voice-controls button, .voice-controls select {
+  min-height: 44px; padding: 10px 14px; border: 1px solid var(--glass-line-bright);
+  border-radius: 10px; background: var(--bg); color: var(--ink); font: inherit;
+}
+.voice-controls button { cursor: pointer; }
+#voiceStart { background: var(--voltage); border-color: var(--voltage); color: white; }
+.voice-controls :disabled { opacity: .55; cursor: not-allowed; }
+.voice-controls select { max-width: 100%; }
+.voice-status { margin: 22px 0 8px; font-weight: 500; min-height: 1.5em; }
+.voice-caption { max-width: 72ch; max-height: 12em; overflow: auto; white-space: pre-wrap; line-height: 1.6; color: var(--ink-dim); }
+.voice-card .hint { max-width: 88ch; line-height: 1.6; }
+button:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid var(--doctrine); outline-offset: 3px; }
+@media (max-width: 600px) { .voice-controls { align-items: stretch; } .voice-controls label { flex-basis: 100%; } .voice-card { padding: 20px; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

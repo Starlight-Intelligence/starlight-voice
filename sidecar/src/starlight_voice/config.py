@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -48,6 +49,18 @@ def _env(key: str, default: str) -> str:
     return value or default
 
 
+def openrouter_inference_key() -> str:
+    """Dedicated Voice credential wins; a broken dedicated value never falls back."""
+    name = ("STARLIGHT_VOICE_OPENROUTER_API_KEY"
+            if "STARLIGHT_VOICE_OPENROUTER_API_KEY" in os.environ else "OPENROUTER_API_KEY")
+    value = os.environ.get(name, "").strip()
+    management = os.environ.get("OPENROUTER_MANAGEMENT_KEY", "").strip()
+    if (not value or value == "*not found*" or any(c.isspace() for c in value)
+            or management and secrets.compare_digest(value.encode(), management.encode())):
+        return ""
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     """Typed runtime configuration for the voice loop.
@@ -57,10 +70,11 @@ class Settings:
     classifies tier and must NOT read this — provider-pin-by-tier is owned by the LLM
     adapter, TTS engine selection by the TTS adapter.
 
-    Defaults are CLOUD-FIRST (decided 2026-06-15): on Frank's GTX 1650 (4GB, no Tensor
-    cores) cloud STT/TTS is faster, frees the GPU for parallel work, and needs no heavy
-    CUDA install. The runnable-today path uses only LIVE keys — Groq Whisper (STT),
-    OpenRouter (LLM, FAST tier pinned to Cerebras THROUGH OpenRouter), ElevenLabs (TTS).
+    Component defaults are CLOUD-FIRST (decided 2026-06-15): on Frank's GTX 1650
+    (4GB, no Tensor cores), this avoids heavy CUDA installs. The configured path is
+    Groq Whisper (STT), OpenRouter (LLM, FAST tier pinned to Cerebras through
+    OpenRouter), ElevenLabs (TTS). Configuration does not prove working keys or
+    measured speed; native browser speech is the primary conversation architecture.
     Local engines (faster-whisper / Kokoro) remain selectable as an offline/private tier
     via env vars; install them with the `voice-local` extra.
     """
@@ -72,12 +86,14 @@ class Settings:
     stt_device: str = "cpu"                       # only used by local tier; cuda|cpu
 
     # LLM (via OpenRouter gateway per global doctrine)
-    llm_model: str = "openai/gpt-5"
+    llm_model: str = "openai/gpt-oss-120b"
     llm_base_url: str = "https://openrouter.ai/api/v1"
     llm_fast_provider: str = "cerebras"          # OpenRouter provider pin for the FAST/voice tier (else TTFT SLA breaks)
+    llm_reasoning_effort: str = ""               # explicit profile choice; no universal latency promise
 
-    # TTS — cloud-first default (ElevenLabs key is live; Cartesia Sonic-3.5 when keyed)
-    tts_engine: str = "elevenlabs"               # elevenlabs | cartesia | kokoro(local) | piper(local)
+    # TTS — explicit component selection; live authentication/audition remain gates.
+    tts_engine: str = "elevenlabs"               # elevenlabs | openrouter-speech | cartesia | kokoro | piper
+    tts_model: str = "eleven_flash_v2_5"
     tts_voice_id: str = ""                       # engine-specific; adapter picks a sensible default when blank
     tts_device: str = "cpu"                       # only used by the local Kokoro/Piper tier
 
@@ -87,16 +103,26 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        profile = _env("STARLIGHT_VOICE_PROFILE", "legacy-component")
+        if profile not in {"legacy-component", "grok-openrouter"}:
+            raise ValueError("Select legacy-component or grok-openrouter Voice profile")
+        defaults = cls() if profile == "legacy-component" else cls(
+            stt_engine="openrouter-transcription", stt_model="x-ai/grok-stt-1.0",
+            llm_model="x-ai/grok-4.7", llm_fast_provider="xai", llm_reasoning_effort="low",
+            tts_engine="openrouter-speech", tts_model="x-ai/grok-voice-tts-1.0", tts_voice_id="ara",
+        )
         return cls(
-            stt_engine=_env("STARLIGHT_STT_ENGINE", cls.stt_engine),
-            stt_model=_env("STARLIGHT_STT_MODEL", cls.stt_model),
+            stt_engine=_env("STARLIGHT_STT_ENGINE", defaults.stt_engine),
+            stt_model=_env("STARLIGHT_STT_MODEL", defaults.stt_model),
             stt_compute_type=_env("STARLIGHT_STT_COMPUTE_TYPE", cls.stt_compute_type),
             stt_device=_env("STARLIGHT_STT_DEVICE", cls.stt_device),
-            llm_model=_env("STARLIGHT_LLM_MODEL", cls.llm_model),
+            llm_model=_env("STARLIGHT_LLM_MODEL", defaults.llm_model),
             llm_base_url=_env("OPENROUTER_BASE_URL", cls.llm_base_url),
-            llm_fast_provider=_env("STARLIGHT_LLM_FAST_PROVIDER", cls.llm_fast_provider),
-            tts_engine=_env("STARLIGHT_TTS_ENGINE", cls.tts_engine),
-            tts_voice_id=_env("STARLIGHT_TTS_VOICE_ID", cls.tts_voice_id),
+            llm_fast_provider=_env("STARLIGHT_LLM_FAST_PROVIDER", defaults.llm_fast_provider),
+            llm_reasoning_effort=_env("STARLIGHT_LLM_REASONING_EFFORT", defaults.llm_reasoning_effort),
+            tts_engine=_env("STARLIGHT_TTS_ENGINE", defaults.tts_engine),
+            tts_model=_env("STARLIGHT_TTS_MODEL", defaults.tts_model),
+            tts_voice_id=_env("STARLIGHT_TTS_VOICE_ID", defaults.tts_voice_id),
             tts_device=_env("STARLIGHT_TTS_DEVICE", cls.tts_device),
         )
 

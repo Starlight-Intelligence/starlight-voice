@@ -2,21 +2,28 @@
 
 Open-source reference implementation of a Jarvis-grade personal voice operator.
 
-Starlight Voice is the extracted voice runtime for the Starlight ecosystem: a Tauri tray shell plus a planned Python sidecar for push-to-talk capture, low-latency STT/LLM/TTS, and MCP-driven tool access.
+Starlight Voice is the extracted voice runtime for the Starlight ecosystem, with a Tauri tray scaffold, a Python broker and optional Pipecat conversation graph, and native browser voice with scoped MCP reads. Live voice quality, latency and RAM acceptance remain pending.
 
-## Current State
+## Current state
+
+The [10 October architecture assessment](docs/ARCHITECTURE-2026-10-10.md) records
+current source boundaries, provider research, offline fixes and remaining runtime
+acceptance. Provider quality, first-audio latency and session RAM remain unverified.
 
 This repo is **portable but not finished**.
 
 What exists today:
 
 - Rust/Tauri tray application scaffold
-- Python sidecar scaffold with text-mode CLI
+- Python sidecar with text-mode CLI, native credential broker and optional component conversation graph
 - JSON-lines IPC for `health`, `utterance`, and `browser.task`
 - machine doctor for installed tools and readiness
 - cognition router for fast, deliberation, browser, CLI-agent, and control paths
 - browser automation adapter seam with safe dry-run mode
 - public landing site (`site/`) and a live operator console (`dashboard/`) sharing one design system
+- native Grok WebSocket and OpenAI WebRTC conversation paths with a local credential broker and scoped read tools; live audio remains unverified
+- selectable ElevenLabs v4 Turbo/v3 Conversational dialogue binding for the Pipecat component graph, requiring an explicit account voice; device playback remains unverified
+- an optional browser ElevenLabs component connection through the same dashboard broker; live authentication and audio remain unverified
 - benchmark smoke scripts and GitHub Actions CI
 - committed `Cargo.lock` for reproducible builds
 - first-principles spec at `docs/SPEC.md`
@@ -27,13 +34,41 @@ What exists today:
 What is still pending:
 
 - push-to-talk hotkey behavior
-- STT/LLM/TTS voice loop
-- MCP server/client wiring
+- live end-to-end STT/LLM/TTS acceptance on the configured accounts and audio device
+- deployed signed memory projection and live recall acceptance; scoped MCP client wiring is implemented
 - live browser automation sandbox
 - signed installer
 - legacy SIS/Arcanea task migration scripts
 
-## Quick Start
+## Quick start
+
+For browser voice, Python 3.12 or newer and your own provider account are enough.
+The Rust tray is optional. Choose a workspace you own and run:
+
+```powershell
+git clone https://github.com/frankxai/starlight-voice.git starlight-voice
+cd starlight-voice
+py -3.12 -m venv .venv
+. ./.venv/Scripts/Activate.ps1
+python -m pip install -e "./sidecar[native]"
+```
+
+For native Grok or OpenAI, configure your own `XAI_API_KEY` or `OPENAI_API_KEY`
+in this shell through your credential store. For Grok through OpenRouter, install
+`python -m pip install -e "./sidecar[voice-browser]"`, set
+`STARLIGHT_VOICE_PROFILE=grok-openrouter`, and inject your normal inference key as
+`STARLIGHT_VOICE_OPENROUTER_API_KEY`. Check its allowance and your account credit.
+The OpenRouter route includes a local speech detector; native browser voice has
+no local speech model. Neither route requires Command Center or Frank's Infisical
+project. Memory tools require your own separately configured signed gateway.
+
+When you intend to start a conversation, run `python dashboard/server.py` from
+the repository root and open `http://127.0.0.1:8765/dashboard/cockpit.html`. Start
+requests microphone permission; Stop ends the session. Installing dependencies
+and selecting a profile do not start microphone capture. Live customer installation
+and provider/audio acceptance remain pending.
+
+### Optional Windows tray
 
 Prerequisites:
 
@@ -44,8 +79,6 @@ Prerequisites:
 Clone and build:
 
 ```powershell
-git clone https://github.com/frankxai/starlight-voice.git C:\Users\frank\starlight-voice
-cd C:\Users\frank\starlight-voice
 cargo build --release -p starlight-voice-tauri
 ```
 
@@ -102,9 +135,137 @@ python dashboard/server.py
 # console  -> http://127.0.0.1:8765/dashboard/cockpit.html
 ```
 
+For native browser voice, first install `python -m pip install -e "./sidecar[native]"`
+and configure a server `XAI_API_KEY` or `OPENAI_API_KEY`. Start the server only when
+you intend to run it; microphone capture begins with the console's Start button.
+The native path has no Pipecat or local model dependency. Approved memory recall
+requires the separately configured signed projection gateway and its per-result
+`starlight.memory.projection-result.v1` metadata. Older unbound gateway responses
+are refused; gateway adoption and signed snapshot verification remain pending.
+Dispatch/approval remain blocked, and real voice quality, interruption, latency
+and RAM need validation.
+
+Grok interruption uses the browser's output-frame position and PCM sample counts
+to estimate each queued content part's played duration. Graph lead time and gaps
+between chunks are excluded. A missing output clock stops the session with a
+recoverable reconnect message. Buffer and metadata limits bound local retention;
+these checks do not establish audible latency or measured RAM.
+
+The text CLI's `dispatch` command also builds previews only. Its legacy direct
+CLI launch path has been removed. `dispatch --live` reports `unavailable` and
+exits with code 2; always-ask requests remain `hard-blocked`. No harness starts
+and no task is queued. Suggested fleet targets and keyword tiers are unverified
+preview hints. Connecting the accepted managed controller remains open.
+
+The native client can be imported without mounting controls. An embedding page can
+set a same-origin `brokerPrefix` and `workletPath`, then explicitly mount and dispose
+its controls. Disposal stops owned media and removes page listeners, including when
+capability discovery is still pending. See the embedding section in
+`docs/ARCHITECTURE-2026-10-10.md`. Command Center's existing Voice page and fixed
+same-origin broker relay are implemented in
+[draft PR 70](https://github.com/frankxai/starlight-command-center/pull/70), with a
+synthetic three-width mission/Stop journey. Deployment and real audio acceptance
+remain open.
+
 To deploy just the landing site statically, publish the `site/` directory as-is.
 
 ## Configuration
+
+For the all-Grok OpenRouter component route, set
+`STARLIGHT_VOICE_PROFILE=grok-openrouter`. This selects Grok STT 1.0,
+`x-ai/grok-4.7` with low reasoning and an xAI provider pin, and Grok Voice TTS 1.0
+with Ara. Set `STARLIGHT_TTS_VOICE_ID=rex` for a male voice candidate; listen before
+claiming a preferred timbre. Explicit engine/model/voice environment settings still
+override the profile. `legacy-component` retains the Groq/Cerebras/ElevenLabs path.
+
+The profile accepts `STARLIGHT_VOICE_OPENROUTER_API_KEY` for every OpenRouter stage.
+That dedicated credential takes precedence over `OPENROUTER_API_KEY`; an empty or
+invalid dedicated value stops setup instead of falling back to a shared key.
+The management key is reserved for administration. Importing configuration never
+retrieves secrets, starts models or opens provider connections.
+
+To load only the dedicated credential from Infisical into the current PowerShell
+session, dot-source the existing setup helper:
+
+```powershell
+. ./scripts/load-openrouter-voice.ps1 -ProjectId '<your-project-uuid>' -Environment dev
+```
+
+It checks key metadata and configures the shell without starting the app, writing
+the bearer to disk or making inference requests. It reads the root secret named
+`STARLIGHT_VOICE_OPENROUTER_API_KEY` in your project. The default domain is Infisical
+EU; pass `-InfisicalDomain https://app.infisical.com/api` for its other supported
+cloud domain. It does not load the management key. A failed reload invalidates
+the dedicated runtime value, preventing reuse of a stale key or fallback to the
+shared key. Check both the inference key allowance and account credit before
+playback. A finite total allowance, with no reset and BYOK included, limits this
+key's spending; it does not add account credit. Replace an expired key through
+your credential store. The helper reports metadata and starts no conversation.
+
+This chained route needs the optional component runtime and local voice detection.
+Native Grok remains the lighter direct xAI conversation path and requires
+`XAI_API_KEY`; an OpenRouter key cannot mint its realtime credential. The component
+route is configured and synthetically tested; audible quality, latency and RAM
+remain unverified. See the updated architecture comparison before enabling it.
+
+For the browser component route, install `python -m pip install -e "./sidecar[voice-browser]"`
+only under machine admission. Configure `GROQ_API_KEY`, an inference
+`OPENROUTER_API_KEY`, and `STARLIGHT_TTS_VOICE_ID`. Direct ElevenLabs synthesis
+also needs `ELEVENLABS_API_KEY`; the explicit OpenRouter speech option below uses
+the OpenRouter key. The console lists only the configured voice, without assigning
+it a licensed name or a listening preference. Configuration presence does not
+verify authentication.
+
+This optional route connects browser audio to the existing Pipecat graph over
+SmallWebRTC. It requires Pipecat 1.12 or newer for detector cleanup and installs
+WebRTC codecs and ONNX dependencies. It uses local Silero detection, while STT,
+text inference and synthesis use cloud providers. Native Grok/OpenAI remain the
+lighter alternative. No microphone, model, pipeline or async host loop starts
+during discovery. Start reserves one five-minute, 20-read scope; its SDP offer
+creates the runtime. Stop revokes reads and releases media before freeing that
+reservation. Failed cleanup holds the slot and exposes Retry cleanup. The existing
+server owns the demand-created async loop until server shutdown; no extra service
+is registered. See the architecture document for transport and verification limits.
+
+The standalone local component conversation needs speech boundaries for Groq's
+segmented transcription. Its existing `voice`/`providers` runtime supplies the
+Silero analyzer; no additional extra is required. An authorized local run binds
+Silero voice detection to the user aggregator; headless graph assembly and native
+browser voice do not load it. The existing shell does not supply push-to-talk
+events to this graph. Voice detection quality, interruption and its RAM footprint
+still need device verification. No model or audio session starts during discovery.
+
+The component graph exposes five read tools through the existing native broker:
+portfolio status, recent receipts, node health, approved memory recall and project
+context. Tool results enter the conversation as untrusted reference data. A local
+read scope lasts five minutes and allows 20 calls; interruption cancels pending
+reads, and Stop releases the scope. The graph does not draft, dispatch or approve
+work. Memory recall still requires a gateway with accepted result-binding metadata.
+
+The broker owns each asynchronous read within its accepted scope. Stop, expiry and
+scope replacement cancel those reads; authorization is checked before IO and again
+before publishing a result. Late results from transports that suppress cancellation
+are discarded. Existing synchronous ledger reads still have no wall-clock guarantee.
+
+Repeated MCP reads reuse a lazily loaded verified certificate context, while each
+read retains its own HTTP client, bearer headers and MCP session cleanup. Discovery
+loads no certificates. This reduces repeated client setup cost; the first read
+still incurs cold setup, and metadata timings do not establish speech latency.
+The optional OpenRouter REST speech adapter reuses the same verified trust
+configuration and retains per-sentence HTTP/response closure. Its provider
+synthesis latency and any audible benefit still require live measurement.
+
+The component comparison graph has an explicit OpenRouter REST speech option:
+set `STARLIGHT_TTS_ENGINE=openrouter-speech`, choose
+`STARLIGHT_TTS_MODEL=elevenlabs/eleven-v4-turbo` or
+`elevenlabs/eleven-v3-conversational`, and set `STARLIGHT_TTS_VOICE_ID` to a
+premade voice name or supported ID. It requires an inference
+`OPENROUTER_API_KEY`; a management key must stay outside the audio graph.
+The adapter streams bounded 24 kHz mono PCM16 and closes its HTTP response on
+interruption. The direct ElevenLabs WebSocket path and native browser defaults
+remain selectable. Live authentication, audible quality, latency and billing
+acceptance are pending. See the REST speech comparison in
+`docs/ARCHITECTURE-2026-10-10.md` before enabling it.
 
 Use the local secrets helper when provider wiring begins:
 

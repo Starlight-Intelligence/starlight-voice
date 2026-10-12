@@ -15,6 +15,7 @@ def system_status() -> dict:
     from .cognition.ledger import read_runs
     from .config import Settings
     from .memory import discover_gateway
+    from .native_bridge import NativeBridge
     from .voice_engines import VARIANTS
 
     settings = Settings.from_env()
@@ -32,6 +33,9 @@ def system_status() -> dict:
             for v in VARIANTS.values()
         ],
         "first_audio_budget_ms": settings.first_audio_p50_budget_ms,
-        "gateway": "running" if discover_gateway() else "not running",
+        "gateway": "configured-unverified" if discover_gateway() else "unconfigured",
+        "runtime_verified": False,
+        "memory_grounding": "reference-metadata-only",
+        "native_voice": NativeBridge().capabilities(),
         "runs": read_runs(8),
     }

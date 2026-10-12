@@ -1,7 +1,11 @@
 // Starlight Voice console — polls /status and renders live operator state.
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+// This page owns mounting. The reusable transport module has no import side effects.
+import("./native-conversation.mjs").then(({ mountNativeConversation }) => mountNativeConversation()).catch(() => {
+  $("voiceStatus").textContent = "Native voice controls unavailable";
+});
 
 function renderLoop(s = {}) {
   const rows = [
@@ -20,7 +24,7 @@ function renderLanes(variants = []) {
       return `<li class="lane"><span><span class="name">${esc(v.label)}</span><br><span class="engine">${esc(
         v.engine
       )}</span>${hypo}</span>
-        <span class="pill ${ok ? "ok" : "blocked"}">${ok ? "key live" : "blocked"}</span></li>`;
+        <span class="pill ${ok ? "ok" : "blocked"}">${ok ? "key configured" : "key needed"}</span></li>`;
     })
     .join("");
 }
@@ -33,7 +37,7 @@ function renderAdapters(adapters = {}) {
 
 function renderLedger(runs = []) {
   if (!runs.length) {
-    $("ledger").innerHTML = `<li class="empty">No dispatches yet. Say "refactor the auth module" to start one.</li>`;
+    $("ledger").innerHTML = `<li class="empty">No recorded dispatches. Native voice dispatch awaits managed intake.</li>`;
     return;
   }
   $("ledger").innerHTML = runs
@@ -127,12 +131,12 @@ async function poll() {
     renderAdapters(s.adapters);
     renderLedger(s.runs);
     renderBudget(s.first_audio_budget_ms ?? null);
-    const up = s.gateway === "running";
+    const up = false; // Configuration is not a runtime health result.
     const gw = $("gateway");
-    gw.textContent = up ? "gateway: running" : "gateway: not running";
+    gw.textContent = `Native projection: ${s.native_voice?.memory_projection_configured ? "configured · unverified" : "unconfigured"}`;
     gw.className = `gateway ${up ? "up" : "down"}`;
     $("liveState").className = "live ok";
-    $("liveLabel").textContent = "live";
+    $("liveLabel").textContent = "Server connected";
     $("err").textContent = s.error || "";
     live = true;
   } catch (e) {

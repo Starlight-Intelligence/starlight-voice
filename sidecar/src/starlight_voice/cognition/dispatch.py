@@ -1,16 +1,12 @@
-"""Dispatch a coding task to the fleet via the agent-handoff-packet contract.
+"""Preview a coding handoff and record its outcome without launching a harness.
 
-Flow: task -> complexity_score -> select_agent -> build handoff-packet -> approval gate
--> (Tier A) fire-and-forget pwsh spawn of the chosen CLI, or surface for ack (Tier B/C).
-
-Safety mirrors browser.py: `live=False` by default — dispatch builds and returns the packet
-without spawning, so the voice path can preview "Routing to Fable 5, diff ready for review"
-before anything executes. Spawns use ABSOLUTE paths (subagent ~ -path footgun) and never block.
+Legacy fleet choices and keyword tiers are routing hints, not admission authority.
+Managed dispatch is unavailable until the accepted controller is connected with
+verified ownership, resource, cost and approval policy. This module creates no queue.
 """
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -19,15 +15,9 @@ import ulid
 from .fleet import select_agent
 from .ledger import record_run, resolve_relevant_files
 
-# Tier doctrine (PRD §4) — DEFAULT-DENY (review wf_a9484479: a deny-list keyword gate is
-# fail-OPEN — it missed "nuke the prod database" and false-blocked "merge sort"). The gate's
-# job is to PAUSE and read the resolved command back for confirmation, NOT to judge safety by
-# wordlist. So: Tier A is granted ONLY on positive read-only signal with no mutation marker;
-# everything else needs ack; ALWAYS-ASK items hard-block even with a generic ack.
-#   A free  — provably read-only, runs immediately
-#   B ack   — anything mutating (default) -> spoken read-back + Frank ack
-#   C stop  — substrate/sovereignty -> escalate to board
-#   D block — CLAUDE.md ALWAYS-ASK -> hard stop, never auto-runs even with generic ack
+# Retained preview risk hints: A read-only wording, B mutation/unknown,
+# C substrate, D always-ask. No keyword or model classification proves safety
+# or grants execution authority. Even A requires controller admission.
 _ALWAYS_ASK = (
     "rotate", "force push", "force-push", "reset --hard", "drop table", "drop database",
     "wipe prod", "wipe production", "nuke", "send email", "email blast", "stripe", "charge",
@@ -51,7 +41,7 @@ def approval_tier(task: str) -> str:
         return "D"
     if any(k in t for k in _SUBSTRATE):
         return "C"
-    # Tier A only on POSITIVE read-only signal AND no mutation marker anywhere (default-deny).
+    # A describes wording only; it never permits execution.
     leads_readonly = any(t == v or t.startswith(v + " ") for v in _READONLY_LEAD)
     if leads_readonly and not any(m in t for m in _MUTATION):
         return "A"
@@ -65,7 +55,7 @@ class HandoffPacket:
     source: str
     intent_class: str
     target_system: str        # repo name (from agent-sessions.json) or fleet agent name
-    target_cli: str           # real agent binary to spawn (claude/codex/opencode/agy)
+    target_cli: str           # legacy suggested CLI, not a verified executable target
     target_model: str
     task: str
     complexity: int
@@ -73,7 +63,7 @@ class HandoffPacket:
     approval_tier: str
     spoken_update_for_frank: str
     relevant_files: list[str] = field(default_factory=list)
-    target_cwd: str = ""       # repo path to spawn in (fixes "runs in the wrong tree")
+    target_cwd: str = ""       # suggested repo path, not a checked write lane
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -88,6 +78,7 @@ class HandoffPacket:
             "complexity": self.complexity,
             "context": {"relevant_files": self.relevant_files},
             "approval": {"required": self.approval_required, "tier": self.approval_tier},
+            "execution": {"mode": "preview", "admitted": False},
             "spoken_update_for_frank": self.spoken_update_for_frank,
         }
 
@@ -104,27 +95,23 @@ def build_handoff_packet(
     score, tier = c.complexity, c.approval_tier
     agent = select_agent(score)  # cost-band fallback (model + binary by complexity)
 
-    # Prefer the REAL per-repo target from agent-sessions.json when the task names a repo:
-    # spawn that repo's configured agent binary with cwd=its path (correct tree + targeting).
+    # Retain the historical per-repo suggestion without treating it as a lease
+    # or verifying that its configured CLI, model and directory remain usable.
     repo = resolve_repo(task)
     if repo:
         target_system = repo["name"]
         target_cli = agent_binary(repo.get("agent", "")) or agent.cli
         target_cwd = repo.get("path", "")
         relevant_files = [repo["path"]] if repo.get("path") else resolve_relevant_files(task)
-        where = f" in {repo['name']}"
     else:
         target_system, target_cli, target_cwd = agent.name, agent.cli, ""
         relevant_files = resolve_relevant_files(task)
-        where = ""
 
     stamp = (now or datetime.now(UTC)).isoformat()
     if tier == "D":
-        spoken = f"Blocked: that's an always-ask action. I will not run \"{task}\" without your explicit go-ahead."
-    elif tier == "A":
-        spoken = f"Routing to {target_system}{where}."
+        spoken = "Blocked: this is an always-ask action. No harness has started."
     else:
-        spoken = f"Routing to {target_system}{where}, but I'll read it back for your okay first (tier {tier})."
+        spoken = "Handoff preview prepared. No harness has started; managed dispatch is unavailable."
     return HandoffPacket(
         packet_id=str(ulid.new()),
         created_at=stamp,
@@ -135,7 +122,7 @@ def build_handoff_packet(
         target_model=agent.model,
         task=task,
         complexity=score,
-        approval_required=(tier != "A"),
+        approval_required=True,
         approval_tier=tier,
         spoken_update_for_frank=spoken,
         relevant_files=relevant_files,
@@ -144,7 +131,7 @@ def build_handoff_packet(
 
 
 class Dispatcher:
-    """Builds packets and (when live) spawns the chosen CLI. Dry-run by default."""
+    """Build packet previews; live requests remain unavailable for every tier."""
 
     def __init__(self, *, live: bool = False) -> None:
         self.live = live
@@ -156,46 +143,14 @@ class Dispatcher:
         # Single-exit so EVERY outcome is recorded to the append-only audit ledger.
         if packet.approval_tier == "D":
             # Tier D = CLAUDE.md ALWAYS-ASK — hard stop, never auto-runs even live.
-            status, note = "hard-blocked", "ALWAYS-ASK action — requires Frank's explicit, specific go-ahead."
+            status, note = "hard-blocked", "Always-ask action. No work started; this path cannot grant approval."
         elif not self.live:
-            status, note = "dry-run", "live=False — packet built, no spawn. Set live=True to execute Tier-A tasks."
-        elif packet.approval_required:
-            status, note = "awaiting-approval", f"Tier {packet.approval_tier} — held for Frank's read-back + ack."
+            status, note = "dry-run", "Packet preview only. No harness started or work queued."
         else:
-            status, note = ("spawned" if self._spawn(packet) else "spawn-failed"), None
+            status, note = "unavailable", "Managed dispatch is unavailable. Controller admission is required; no harness started or work queued."
 
         record_run(pd, status)
         result: dict[str, object] = {"packet": pd, "status": status}
         if note:
             result["note"] = note
         return result
-
-    @staticmethod
-    def _spawn(packet: HandoffPacket) -> bool:
-        """Launch the target CLI as inert argv — NO shell, NO -Command string.
-
-        Security (review wf_a9484479): the old path f-stringed raw voice transcript into
-        `pwsh -Command`, an injection sink. Here `task` is one argv element the OS never
-        re-parses (shell=False); the CLI is resolved on PATH via an allow-list (unresolvable
-        alias -> refuse, never fall back to a shell). stdout/stderr go to a per-run log.
-        """
-        import shutil
-        from pathlib import Path
-
-        exe = shutil.which(packet.target_cli)
-        if exe is None:
-            return False  # alias not a resolvable executable -> refuse (do NOT shell-resolve)
-        if len(packet.task) > 2000 or any(ord(c) < 32 and c != "\t" for c in packet.task):
-            return False  # reject oversized / control-char payloads
-
-        # Spawn in the target repo's tree (from agent-sessions.json) so the agent sees the right
-        # files — not wherever the sidecar happens to run.
-        cwd = packet.target_cwd if packet.target_cwd and Path(packet.target_cwd).is_dir() else None
-        runs_dir = Path(__file__).resolve().parents[3] / "memory" / "voice" / "runs"
-        try:
-            runs_dir.mkdir(parents=True, exist_ok=True)
-            log = open(runs_dir / f"{packet.packet_id}.log", "w", encoding="utf-8")
-            subprocess.Popen([exe, "-p", packet.task], stdout=log, stderr=subprocess.STDOUT, shell=False, cwd=cwd)
-            return True
-        except Exception:
-            return False

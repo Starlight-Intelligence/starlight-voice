@@ -30,13 +30,27 @@
             <h1>Operator Console</h1>
           </div>
         </div>
-        <canvas class="topwave" id="topwave" aria-hidden="true"></canvas>
         <div class="live" id="liveState" role="status" aria-live="polite">
           <span class="dot" aria-hidden="true"></span><span id="liveLabel">connecting…</span>
         </div>
       </header>
 
       <section class="grid">
+        <article class="glass card voice-card" aria-labelledby="nativeH">
+          <div class="voice-heading"><h2 id="nativeH">Talk to Starlight</h2><span class="muted">Native audio · preview</span></div>
+          <p class="voice-intro">Quick conversation and scoped status or memory reads. Coding runs stay with your managed harnesses.</p>
+          <div class="voice-controls">
+            <label>Provider<select id="voiceProvider" disabled aria-describedby="voicePrivacy"><option value="">Checking providers…</option></select></label>
+            <label>Voice<select id="voiceVoice" disabled><option value="">Checking voices…</option></select></label>
+            <button id="voiceStart" type="button" disabled>Start conversation</button>
+            <button id="voiceMute" type="button" aria-pressed="false" disabled>Mute</button>
+            <button id="voiceStop" type="button" disabled>Stop</button>
+          </div>
+          <p id="voiceStatus" class="voice-status" role="status" aria-live="polite">Checking voice configuration…</p>
+          <p id="voiceCaption" class="voice-caption" aria-label="Recent assistant captions"></p>
+          <pre id="voiceMissionDraft" class="voice-caption" aria-label="Unsaved mission draft" hidden></pre>
+          <p id="voicePrivacy" class="hint">Audio goes to the selected provider after Start. Stop, Escape or hiding this tab closes the microphone and transport. Captions stay in this page. Five-minute client limit; provider spending is not capped by the ephemeral key. Dispatch and approvals remain blocked.</p>
+        </article>
         <article class="glass card" aria-labelledby="loopH">
           <h2 id="loopH">Voice loop</h2>
           <dl class="kv" id="loopKv"></dl>
@@ -51,7 +65,7 @@
         <article class="glass card" aria-labelledby="memH">
           <h2 id="memH">Memory grounding</h2>
           <p class="gateway" id="gateway">—</p>
-          <p class="hint">non-FAST turns recall from the SIS gateway (degrade-first).</p>
+          <p class="hint">Native voice recalls approved summaries only when the signed memory projection is configured.</p>
         </article>
 
         <article class="glass card span-2" aria-labelledby="ledgerH">
