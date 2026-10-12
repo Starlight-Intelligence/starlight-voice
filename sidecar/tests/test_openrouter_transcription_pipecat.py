@@ -1,4 +1,7 @@
-"""Actual SDK frames and lifecycle with synthetic REST; no models or providers."""
+"""Actual SDK frames and synthetic REST; no provider network or audio devices.
+
+The full graph can initialize the SDK's bundled turn analyzer on hosted runners.
+"""
 import asyncio
 
 import pytest

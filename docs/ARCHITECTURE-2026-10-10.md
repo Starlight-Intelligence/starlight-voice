@@ -114,10 +114,12 @@ The shared `OPENROUTER_API_KEY` fails metadata authentication because its expiry
 exceeds the account maximum lifetime. On 11 October, Frank authorized a dedicated
 replacement for Voice. `STARLIGHT_VOICE_OPENROUTER_API_KEY` was created and stored
 in Infisical EU / Internal Tooling / dev / root; readback matched and GET `/key`
-returned HTTP 200 with normal inference role. Its cap is $0, includes BYOK, has no
-reset and expires on 18 October. No inference was requested or app started.
-Both original shared credentials were verified unchanged. Funding alone does not
-raise the dedicated cap. The management key remains outside the inference graph.
+returned HTTP 200 with normal inference role. It was initially created with a
+$0 total cap. On 12 October, Frank approved a $5 total allowance; administrative
+and normal-key metadata verified the update, no reset, BYOK included and the
+original 18 October expiry. No inference was requested or app started. Both
+original shared credentials were verified unchanged. Account funding and a key
+allowance remain separate controls. The management key stays outside inference.
 Credentials are not copied into this repo; invalid dedicated values and Infisical's
 `*not found*` sentinel fail closed instead of selecting the shared key.
 
@@ -165,7 +167,26 @@ alternative; compare the same utterances, tool results, interruption recovery an
 first audible reply after funding. Native Grok avoids the segmented STT/text/TTS
 chain and local detector. Keep it as the direct low-overhead conversation choice.
 No connected service, model, listening evaluation or RAM measurement establishes
-a winner yet. The zero-cap key deliberately prevents paid acceptance runs now.
+a winner yet. Apps remain stopped under Frank's explicit instruction; live
+acceptance additionally requires machine admission and sufficient account credit.
+
+### Synthetic conversation acceptance on 12 October
+
+The actual SDK fixture now drives marker audio through segmented Grok STT,
+OpenRouter LLM SSE and Ara PCM synthesis using in-memory HTTP responses. Its first
+hosted run failed before the LLM request: Pipecat expands `Settings.extra` into
+OpenAI client keyword arguments, so raw `provider` and `reasoning` keys were
+invalid. They now live inside `extra_body`. The fixture asserts the actual wire
+body, dedicated inference authorization, five read-tool schemas, speech format
+and closure of all three responses and both clients. Pipecat 1.3 and 1.12 each
+passed 34 hosted tests at `1707b0b`. This exercises the real SDK and synthetic
+media; live provider/audio quality and cost remain unverified.
+
+A narrow independent NVIDIA Nemotron 3 Ultra static review at that revision
+returned PASS for the wire repair, bindings, fixture and local runner fallback.
+The earlier broader FAIL is retained and remains outside that narrow verdict;
+its two adjudication attempts were incomplete. Explicit conversation history
+compaction/token bounds, live recovery and full release review remain open.
 
 ## Memory and readiness
 

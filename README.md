@@ -197,10 +197,10 @@ the bearer to disk or making inference requests. It reads the root secret named
 EU; pass `-InfisicalDomain https://app.infisical.com/api` for its other supported
 cloud domain. It does not load the management key. A failed reload invalidates
 the dedicated runtime value, preventing reuse of a stale key or fallback to the
-shared key. The dedicated instance key created on 11 October authenticates but has a $0
-cap, including BYOK, and expires on 18 October. Funding the account alone does not
-raise that cap; set an approved finite allowance before playback and replace an
-expired key through Infisical. Existing shared credentials were preserved.
+shared key. Check both the inference key allowance and account credit before
+playback. A finite total allowance, with no reset and BYOK included, limits this
+key's spending; it does not add account credit. Replace an expired key through
+your credential store. The helper reports metadata and starts no conversation.
 
 This chained route needs the optional component runtime and local voice detection.
 Native Grok remains the lighter direct xAI conversation path and requires
