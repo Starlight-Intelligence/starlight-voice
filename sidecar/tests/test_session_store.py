@@ -2,6 +2,7 @@ import json
 
 from starlight_voice.session_store import (
     append_event,
+    estate_lookup,
     last_conversation_id,
     note_conversation_id,
     publish,
@@ -38,6 +39,20 @@ def test_memory_is_marked_untrusted(monkeypatch) -> None:
     text = remembered["session"]["instructions"]
     assert "Untrusted memory follows" in text
     assert "started is always false" in text
+
+
+def test_estate_lookup_reads_the_desk_and_does_not_start(monkeypatch, tmp_path) -> None:
+    desk = tmp_path / "OPS-DESK.md"
+    desk.write_text("The gate lists one blocked voice search item.", encoding="utf-8")
+    monkeypatch.setenv("STARLIGHT_VOICE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("STARLIGHT_DESK_FILES", str(desk))
+    found = estate_lookup("voice search")
+    assert found["started"] is False
+    assert found["ok"] is True
+    assert found["hits"][0]["source"] == "OPS-DESK.md"
+    missing = estate_lookup("zzzz-not-on-the-desk")
+    assert missing["ok"] is False
+    assert missing["started"] is False
 
 
 def test_missing_store_reads_as_stopped(monkeypatch, tmp_path) -> None:

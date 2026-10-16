@@ -27,7 +27,7 @@ def test_session_update_pins_grok_voice_and_the_harness_tool(monkeypatch) -> Non
     assert session["audio"]["input"]["format"]["rate"] == 24000
     assert session["audio"]["output"]["format"]["rate"] == 24000
     names = [tool.get("name") or tool.get("type") for tool in session["tools"]]
-    assert names == ["web_search", "x_search", "meta_harness"]
+    assert names == ["web_search", "x_search", "meta_harness", "estate_lookup"]
     assert "started is always false" in session["instructions"]
     assert "web_search" in session["instructions"]
 

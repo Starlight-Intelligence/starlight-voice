@@ -126,6 +126,79 @@ def note_conversation_id(event: dict) -> str:
     return safe_conversation_id(event.get("conversation_id"))
 
 
+def prior_talk(limit: int = 6) -> str:
+    lines = [
+        str(row.get("line"))
+        for row in read_sessions(40)
+        if row.get("kind") == "transcript" and row.get("line")
+    ]
+    if not lines:
+        return ""
+    return " | ".join(line[:120] for line in lines[-limit:])
+
+
+def _desk_files() -> list[Path]:
+    override = os.environ.get("STARLIGHT_DESK_FILES", "").strip()
+    if override:
+        return [Path(part.strip()) for part in override.split(";") if part.strip()]
+    root = Path(r"C:\Users\frank\starlight\command-center")
+    return [root / "state.json", root / "OPS-DESK.md"]
+
+
+def _snippet(path: Path, needle: str) -> str:
+    try:
+        raw = path.read_text(encoding="utf-8")[:64_000]
+    except OSError:
+        return ""
+    folded = raw.lower()
+    at = folded.find(needle)
+    if at < 0:
+        return ""
+    start = max(0, at - 60)
+    clip = " ".join(raw[start : at + 140].split())
+    return clip[:180]
+
+
+def estate_lookup(query: str) -> dict[str, object]:
+    """Search the session and the desk files. No home walk, no web, no spawn."""
+
+    text = " ".join(query.split())
+    if len(text) < 2:
+        return {
+            "ok": False,
+            "started": False,
+            "spoken": "Nothing to look up.",
+            "hits": [],
+        }
+    needle = text.lower()
+    hits: list[dict[str, str]] = []
+    for row in read_sessions(40):
+        line = str(row.get("line") or "")
+        if needle in line.lower():
+            hits.append({"source": "session", "text": line[:180]})
+        if len(hits) >= 5:
+            break
+    live = read_live()
+    if needle in json.dumps(live).lower():
+        hits.append(
+            {
+                "source": "live",
+                "text": f"phase {live.get('phase')} {live.get('line') or ''}".strip()[:180],
+            }
+        )
+    for path in _desk_files():
+        if len(hits) >= 5:
+            break
+        clip = _snippet(path, needle)
+        if clip:
+            hits.append({"source": path.name, "text": clip})
+    if not hits:
+        spoken = "Nothing on the desk or the recent session matches that."
+    else:
+        spoken = f"I found {len(hits)} on the desk and the session. {hits[0]['text']}"
+    return {"ok": bool(hits), "started": False, "spoken": spoken[:280], "hits": hits[:5]}
+
+
 def recall_for_open() -> tuple[str, str]:
     """One vault recall at socket open. Empty when the gateway is down."""
 
