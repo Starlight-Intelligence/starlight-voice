@@ -40,7 +40,10 @@ def test_live_page_and_api(live_server, monkeypatch, tmp_path) -> None:
 
     publish("armed", voice="ara", memory="idle")
     page = urllib.request.urlopen(live_server + "/live", timeout=5)
-    assert b"Live session" in page.read()
+    html = page.read()
+    assert b"Live session" in html
+    assert b'id="orbs"' in html
+    assert b"getUserMedia" not in html
     body = json.loads(urllib.request.urlopen(live_server + "/api/live", timeout=5).read())
     assert body["phase"] == "armed"
     sessions = json.loads(urllib.request.urlopen(live_server + "/api/sessions", timeout=5).read())
