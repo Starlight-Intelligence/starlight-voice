@@ -18,6 +18,7 @@ import json
 import math
 import os
 import struct
+import subprocess
 import threading
 import time
 from collections.abc import Sequence
@@ -40,6 +41,7 @@ from .session_store import (
     recall_for_open,
     safe_conversation_id,
 )
+from .spend import USD_PER_MINUTE, WEB_SEARCH_CAP, X_SEARCH_CAP, cap_label, open_budget, record_seconds
 
 MODEL = "grok-voice-latest"
 REALTIME_URL = f"wss://api.x.ai/v1/realtime?model={MODEL}"
@@ -118,8 +120,26 @@ _LOOKUP = {
 }
 
 
-def session_update(memory: str = "", prior: str = "") -> dict[str, object]:
+def session_update(
+    memory: str = "",
+    prior: str = "",
+    *,
+    server_tools: bool = True,
+    x_search: bool = True,
+) -> dict[str, object]:
     instructions = INSTRUCTIONS
+    if server_tools and x_search:
+        instructions += (
+            f" Use web_search at most {WEB_SEARCH_CAP} times and x_search at most {X_SEARCH_CAP} time in this call, then answer."
+        )
+    elif server_tools:
+        instructions += f" x_search is off. Use web_search at most {WEB_SEARCH_CAP} times in this call, then answer."
+    tools: list[object] = []
+    if server_tools:
+        tools.append(_SERVER_TOOLS[0])
+        if x_search:
+            tools.append(_SERVER_TOOLS[1])
+    tools.extend([_TOOL, _LOOKUP])
     notes: list[str] = []
     earlier = " ".join(prior.split())
     block = " ".join(memory.split())
@@ -137,7 +157,7 @@ def session_update(memory: str = "", prior: str = "") -> dict[str, object]:
             "reasoning": {"effort": reasoning_effort()},
             "resumption": {"enabled": True},
             "turn_detection": {"type": "server_vad"},
-            "tools": [*_SERVER_TOOLS, _TOOL, _LOOKUP],
+            "tools": tools,
             "audio": {
                 "input": {
                     "format": {"type": "audio/pcm", "rate": SAMPLE_RATE},
@@ -197,6 +217,22 @@ def function_output(call_id: str, result: dict) -> dict[str, object]:
             "output": json.dumps(result, separators=(",", ":")),
         },
     }
+
+
+def server_tool_hit(event: dict) -> str:
+    """Count a finished server tool call. Client tools return an empty string."""
+
+    kind = str(event.get("type") or "")
+    name = str(event.get("name") or "")
+    if name in {"meta_harness", "estate_lookup"}:
+        return ""
+    if not (kind.endswith(".completed") or kind.endswith(".done")):
+        return ""
+    if "web_search" in kind or name == "web_search":
+        return "web_search"
+    if "x_search" in kind or name == "x_search":
+        return "x_search"
+    return ""
 
 
 def parse_arguments(raw: object) -> dict:
@@ -260,19 +296,92 @@ def token_from_grok_auth(path: Path, now: datetime | None = None) -> str | None:
     return token or None
 
 
-def _use_api_key() -> bool:
-    return os.environ.get("STARLIGHT_XVOICE_USE_API_KEY", "").strip() == "1"
+def xai_shaped(value: str) -> bool:
+    token = value.strip()
+    return token.startswith("xai-") and len(token) >= 12 and " " not in token and "\n" not in token
+
+
+def _infisical_enabled() -> bool:
+    return os.environ.get("STARLIGHT_XVOICE_INFISICAL", "1").strip() != "0"
+
+
+_pulled: str | None = None
+_pulled_set = False
+
+
+def key_from_infisical(runner=None) -> str | None:
+    """Read XAI_API_KEY from the EU Infisical dev secret. Reject anything else."""
+
+    global _pulled, _pulled_set
+    if not _infisical_enabled():
+        return None
+    if runner is None and _pulled_set:
+        return _pulled
+    if runner is None:
+        runner = _infisical_stdout
+    try:
+        raw = runner()
+    except (OSError, subprocess.TimeoutExpired):
+        raw = ""
+    value = raw.strip() if isinstance(raw, str) else ""
+    if value.startswith("XAI_API_KEY="):
+        value = value.split("=", 1)[1].strip().strip('"').strip("'")
+    shaped = value if xai_shaped(value) else None
+    if runner is _infisical_stdout or runner is None:
+        _pulled = shaped
+        _pulled_set = True
+    return shaped
+
+
+def _infisical_stdout() -> str:
+    env_name = os.environ.get("STARLIGHT_XVOICE_INFISICAL_ENV", "dev").strip() or "dev"
+    done = subprocess.run(
+        [
+            "infisical",
+            "secrets",
+            "get",
+            "XAI_API_KEY",
+            "--plain",
+            "--silent",
+            "--domain",
+            "https://eu.infisical.com",
+            "--org",
+            "a40109f1-3b54-477e-a7f9-805dd8abe602",
+            "--projectId",
+            "5578966b-0c74-4253-9a3c-bace21d97b24",
+            "--env",
+            env_name,
+            "--log-level",
+            "error",
+            "--telemetry=false",
+        ],
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    if done.returncode != 0:
+        return ""
+    return done.stdout.decode("utf-8", errors="replace")
+
+
+def _env_api_key() -> str | None:
+    if os.environ.get("STARLIGHT_XVOICE_USE_API_KEY", "").strip() == "0":
+        return None
+    value = os.environ.get("XAI_API_KEY", "").strip()
+    return value if xai_shaped(value) else None
 
 
 def token_status() -> dict[str, object]:
-    """Own-account login first. Infisical is OpenRouter and is not read here."""
+    """xAI-shaped key first. Grok CLI login is the fallback. OpenRouter is ignored."""
 
     load_local_env()
+    if _env_api_key():
+        return {"present": True, "source": "api-key"}
+    if key_from_infisical():
+        return {"present": True, "source": "infisical"}
     path = _grok_auth_path()
     if token_from_grok_auth(path):
         return {"present": True, "source": "grok-cli"}
-    if _use_api_key() and os.environ.get("XAI_API_KEY", "").strip():
-        return {"present": True, "source": "api-key"}
     if path.is_file():
         return {"present": False, "source": "grok-cli-expired"}
     return {"present": False, "source": "missing"}
@@ -280,12 +389,21 @@ def token_status() -> dict[str, object]:
 
 def resolve_token() -> str | None:
     load_local_env()
-    account = token_from_grok_auth(_grok_auth_path())
-    if account:
-        return account
-    if _use_api_key():
-        return os.environ.get("XAI_API_KEY", "").strip() or None
-    return None
+    env_key = _env_api_key()
+    if env_key:
+        return env_key
+    pulled = key_from_infisical()
+    if pulled:
+        return pulled
+    return token_from_grok_auth(_grok_auth_path())
+
+
+def server_tools_enabled(source: str) -> bool:
+    return source in {"api-key", "infisical"}
+
+
+def x_search_enabled() -> bool:
+    return os.environ.get("STARLIGHT_XVOICE_X_SEARCH", "").strip() == "1"
 
 
 def clap_selfcheck() -> bool:
@@ -542,8 +660,10 @@ async def _pump(
     saw: dict[str, bool],
     activity: dict[str, float] | None = None,
     box: dict[str, str] | None = None,
+    meter: dict[str, int] | None = None,
 ) -> None:
     pending: list[dict] = []
+    counts = meter if meter is not None else {"web_search": 0, "x_search": 0}
     async for message in ws:
         if closed.is_set():
             break
@@ -602,7 +722,17 @@ async def _pump(
         if kind in {"input_audio_buffer.speech_started", "response.cancelled"} and ear is not None:
             ear.clear_play()
             saw["speech"] = True
+        hit = server_tool_hit(event)
+        if hit:
+            counts[hit] = counts.get(hit, 0) + 1
+            limit = WEB_SEARCH_CAP if hit == "web_search" else X_SEARCH_CAP
+            if counts[hit] > limit:
+                print("close (search cap)", flush=True)
+                closed.set()
+                break
         if kind == "response.function_call_arguments.done":
+            if hit:
+                continue
             pending.append(event)
             continue
         if kind == "response.done" and pending:
@@ -642,16 +772,19 @@ async def _run_socket(
     prior: str = "",
     resume_id: str = "",
     box: dict[str, str] | None = None,
+    server_tools: bool = True,
+    x_search: bool = False,
 ) -> dict[str, bool]:
     import websockets
 
     saw = {"audio": False, "transcript": False, "tool": False, "done": False, "error": False, "speech": False, "resume_rejected": False}
+    meter = {"web_search": 0, "x_search": 0}
     async with websockets.connect(
         realtime_url(resume_id),
         additional_headers={"Authorization": f"Bearer {token}"},
         max_size=8_000_000,
     ) as ws:
-        await ws.send(json.dumps(session_update(memory, prior)))
+        await ws.send(json.dumps(session_update(memory, prior, server_tools=server_tools, x_search=x_search)))
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             raw = await asyncio.wait_for(ws.recv(), timeout=5)
@@ -679,7 +812,7 @@ async def _run_socket(
             if text:
                 await ws.send(json.dumps(_text_item(text)))
                 await ws.send(json.dumps({"type": "response.create"}))
-            tasks = [asyncio.create_task(_pump(ws, ear, closed=closed, saw=saw, activity=activity, box=box))]
+            tasks = [asyncio.create_task(_pump(ws, ear, closed=closed, saw=saw, activity=activity, box=box, meter=meter))]
             if ear is not None and not text:
                 tasks.append(asyncio.create_task(_send_mic(ws, ear, closed)))
             if text:
@@ -710,14 +843,21 @@ async def _run_socket(
             prior=prior,
             resume_id="",
             box=box,
+            server_tools=server_tools,
+            x_search=x_search,
         )
     return saw
 
 
 async def run_text(text: str) -> int:
     token = resolve_token()
+    source = str(token_status()["source"])
     if not token:
-        print("Grok CLI login is missing or expired. Sign in with grok. This socket does not read Infisical.", flush=True)
+        print("No xAI key and no Grok CLI login. The socket stays closed.", flush=True)
+        return 2
+    budget = open_budget(session_cap=25)
+    if not budget["ok"]:
+        print(budget["spoken"], flush=True)
         return 2
     ear = Ear()
     try:
@@ -734,12 +874,22 @@ async def run_text(text: str) -> int:
         closed.set()
 
     stopper = asyncio.create_task(_stop_later())
+    started = time.monotonic()
     try:
-        saw = await _run_socket(token, ear, text=text, closed=closed)
+        saw = await _run_socket(
+            token,
+            ear,
+            text=text,
+            closed=closed,
+            server_tools=server_tools_enabled(source),
+            x_search=x_search_enabled(),
+        )
     except Exception as exc:
         print(f"voice socket failed: {safe_error(exc)}", flush=True)
         return 2
     finally:
+        label = record_seconds(time.monotonic() - started)
+        print(f"cap {label}. Estimate ${USD_PER_MINUTE:.2f}/min. Search is extra.", flush=True)
         stopper.cancel()
         if ear is not None:
             await asyncio.sleep(0.8)
@@ -752,7 +902,7 @@ async def run_text(text: str) -> int:
 async def run_clap_loop() -> int:
     report = readiness()
     if not report["token"]:
-        print("Armed only after the Grok CLI login. This socket does not read Infisical.", flush=True)
+        print("No xAI key and no Grok CLI login. The socket stays closed.", flush=True)
         print(json.dumps(report, separators=(",", ":")), flush=True)
         return 2
     if not report["sounddevice"] or not report["websockets"]:
@@ -775,21 +925,46 @@ async def run_clap_loop() -> int:
         return 2
     print(
         f"armed. mic: {ear.mic_name}. voice: {voice_name()}. reasoning: {reasoning_effort()}. "
-        f"key: {report['token_source']}. Account login. Infisical is not used. "
+        f"key: {report['token_source']}. Cap {cap_label()} a day. "
+        f"Estimate ${USD_PER_MINUTE:.2f}/min while the socket is open. "
         "One clap ticks. Two claps open Grok Voice. Two claps close it. "
         "Watch http://127.0.0.1:8765/live",
         flush=True,
     )
-    publish("armed", voice=voice_name(), reasoning=reasoning_effort(), mic=ear.mic_name, memory="idle", pid=os.getpid())
+    publish(
+        "armed",
+        voice=voice_name(),
+        reasoning=reasoning_effort(),
+        mic=ear.mic_name,
+        memory="idle",
+        pid=os.getpid(),
+        cap=cap_label(),
+        key=str(report["token_source"]),
+    )
     try:
         while True:
             ear.toggle.clear()
             await ear.toggle.wait()
             ear.toggle.clear()
             ear.clear_play()
+            budget = open_budget(session_cap=MAX_SESSION_S)
+            if not budget["ok"]:
+                print(budget["spoken"], flush=True)
+                publish(
+                    "armed",
+                    voice=voice_name(),
+                    reasoning=reasoning_effort(),
+                    mic=ear.mic_name,
+                    memory="idle",
+                    pid=os.getpid(),
+                    cap=str(budget["label"]),
+                    key=str(token_status()["source"]),
+                )
+                continue
             ear.play(open_chime())
             print("open", flush=True)
             fresh = resolve_token()
+            source = str(token_status()["source"])
             if fresh:
                 token = fresh
             memory, memory_label = recall_for_open()
@@ -807,6 +982,8 @@ async def run_clap_loop() -> int:
                 mic=ear.mic_name,
                 memory=memory_label,
                 pid=os.getpid(),
+                cap=str(budget["label"]),
+                key=source,
             )
             append_event(
                 "open",
@@ -819,7 +996,15 @@ async def run_clap_loop() -> int:
             started = time.monotonic()
             idle = {"at": started}
 
-            async def _watch(started_at: float = started, flag: asyncio.Event = closed) -> None:
+            max_s = float(budget["max_s"])
+            why = str(budget["why"])
+
+            async def _watch(
+                started_at: float = started,
+                flag: asyncio.Event = closed,
+                limit: float = max_s,
+                reason: str = why,
+            ) -> None:
                 while not flag.is_set():
                     await asyncio.sleep(0.2)
                     if ear.toggle.is_set():
@@ -827,8 +1012,8 @@ async def run_clap_loop() -> int:
                         print("close", flush=True)
                         flag.set()
                         return
-                    if time.monotonic() - started_at > MAX_SESSION_S:
-                        print("close (session cap)", flush=True)
+                    if time.monotonic() - started_at > limit:
+                        print(f"close ({reason})", flush=True)
                         flag.set()
                         return
 
@@ -854,11 +1039,15 @@ async def run_clap_loop() -> int:
                     prior=prior_talk(),
                     resume_id=session["conversation_id"],
                     box=session,
+                    server_tools=server_tools_enabled(source),
+                    x_search=x_search_enabled(),
                 )
             except Exception as exc:
                 print(f"voice socket failed: {safe_error(exc)}", flush=True)
                 print("armed", flush=True)
             finally:
+                label = record_seconds(time.monotonic() - started)
+                print(f"cap {label}. Estimate ${USD_PER_MINUTE:.2f}/min. Search is extra.", flush=True)
                 watcher.cancel()
                 idler.cancel()
                 ear.session_open = False
@@ -879,6 +1068,8 @@ async def run_clap_loop() -> int:
                     pid=os.getpid(),
                     session_id=session["session_id"],
                     conversation_id=session.get("conversation_id", ""),
+                    cap=label,
+                    key=source,
                 )
             print("armed", flush=True)
     finally:

@@ -33,6 +33,8 @@
         <dt>Session</dt><dd id="session">none</dd>
         <dt>Conversation</dt><dd id="conversation">none</dd>
         <dt>Microphone</dt><dd id="mic">the listener owns it</dd>
+        <dt>Cap</dt><dd id="cap">15 min a day</dd>
+        <dt>Key</dt><dd id="key">checking</dd>
       </dl>
       <p class="reload" id="reload">This page only watches. It does not open the microphone or your signed-in browsers.</p>
       <h2>Recent session events</h2>
@@ -224,6 +226,8 @@
           text("session", live.session_id);
           text("conversation", live.conversation_id);
           text("mic", live.mic || "the listener owns it");
+          text("cap", live.cap || "15 min a day");
+          text("key", live.key || "grok-cli");
           text("reload", live.reload || document.getElementById("reload").textContent);
           const sessions = await fetch("/api/sessions").then((response) => response.json());
           const list = document.getElementById("sessions");

@@ -5,12 +5,15 @@ from pathlib import Path
 import pytest
 
 from starlight_voice.meta_harness import route_work
+from starlight_voice.spend import daily_cap_seconds, open_budget, record_seconds
 from starlight_voice.x_voice import (
     audio_delta,
     function_output,
+    key_from_infisical,
     note_transcript,
     parse_arguments,
     resolve_token,
+    server_tool_hit,
     session_update,
     token_from_grok_auth,
 )
@@ -42,13 +45,42 @@ def test_account_login_beats_an_env_api_key(monkeypatch, tmp_path: Path) -> None
     assert resolve_token() == "test-token-not-real"
 
 
-def test_console_api_key_is_opt_in(monkeypatch, tmp_path: Path) -> None:
+def test_xai_shaped_env_key_is_used(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(tmp_path / "missing.json"))
     monkeypatch.setenv("XAI_API_KEY", "xai-test-not-real")
-    monkeypatch.delenv("STARLIGHT_XVOICE_USE_API_KEY", raising=False)
+    monkeypatch.setenv("STARLIGHT_XVOICE_USE_API_KEY", "0")
     assert resolve_token() is None
-    monkeypatch.setenv("STARLIGHT_XVOICE_USE_API_KEY", "1")
+    monkeypatch.delenv("STARLIGHT_XVOICE_USE_API_KEY", raising=False)
     assert resolve_token() == "xai-test-not-real"
+
+
+def test_infisical_rejects_a_non_xai_secret(monkeypatch) -> None:
+    monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "1")
+    assert key_from_infisical(lambda: "sk-or-not-for-this-socket") is None
+    assert key_from_infisical(lambda: "xai-test-from-infisical") == "xai-test-from-infisical"
+
+
+def test_search_cap_counts_a_finished_server_tool() -> None:
+    assert server_tool_hit({"type": "response.web_search_call.completed"}) == "web_search"
+    assert server_tool_hit({"type": "response.function_call_arguments.done", "name": "meta_harness"}) == ""
+    assert server_tool_hit({"type": "response.x_search_call.in_progress"}) == ""
+
+
+def test_session_can_omit_x_search() -> None:
+    names = [tool.get("name") or tool.get("type") for tool in session_update(x_search=False)["session"]["tools"]]
+    assert names == ["web_search", "meta_harness", "estate_lookup"]
+    assert "x_search is off" in session_update(x_search=False)["session"]["instructions"]
+
+
+def test_daily_cap_refuses_another_open(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("STARLIGHT_VOICE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("STARLIGHT_XVOICE_DAILY_MINUTES", "15")
+    record_seconds(15 * 60)
+    budget = open_budget()
+    assert budget["ok"] is False
+    assert "stays closed" in str(budget["spoken"])
+    monkeypatch.setenv("STARLIGHT_XVOICE_DAILY_MINUTES", "10000")
+    assert daily_cap_seconds() == 60 * 60
 
 
 def test_audio_and_transcript_extractors() -> None:
