@@ -6,6 +6,6 @@ The open gesture is two claps. One clap stays shut. Speech stays shut. A second 
 
 `listen` speaks through `grok-voice-latest`. A work request calls `meta_harness`, which asks the estate dispatch table and stops. The operator does not spawn a coding seat, merge, send, or spend.
 
-Keys stay in Infisical (`XAI_API_KEY`), then `.env.local`, then the existing Grok CLI login. Never commit them. The voice is `ara`. Reasoning is `high`.
+The voice socket uses the signed-in Grok CLI account. Infisical holds OpenRouter, and this socket does not read it. Never commit keys. The voice is `ara`. Reasoning is `high`.
 
 Checks for this slice: `python -m pytest sidecar/tests/test_clap.py sidecar/tests/test_x_voice.py` from the repo root, with `PYTHONPATH=sidecar/src`.

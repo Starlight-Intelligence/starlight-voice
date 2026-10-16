@@ -17,9 +17,7 @@ import ctypes
 import json
 import math
 import os
-import shutil
 import struct
-import subprocess
 import threading
 import time
 from collections.abc import Sequence
@@ -216,94 +214,32 @@ def token_from_grok_auth(path: Path, now: datetime | None = None) -> str | None:
     return token or None
 
 
-_infisical_cache: dict[str, object] = {"outcome": "", "until": 0.0}
-
-
-def load_infisical_key(runner=None, now: float | None = None) -> str:
-    """Pull XAI_API_KEY from Infisical.
-
-    Returns present, missing, unlinked, or unavailable. On present, the value
-    is written to the process environment and is not returned or logged.
-    """
-
-    clock = time.monotonic() if now is None else now
-    if runner is None and _infisical_cache["outcome"] == "present" and os.environ.get("XAI_API_KEY", "").strip():
-        return "present"
-    if runner is None and clock < float(_infisical_cache["until"] or 0.0):
-        cached = str(_infisical_cache["outcome"] or "")
-        if cached:
-            return cached
-
-    project = os.environ.get("INFISICAL_PROJECT_ID", "").strip()
-    linked = (repo_root() / ".infisical.json").is_file()
-    if not project and not linked:
-        return _remember_infisical("unlinked", clock, runner is None)
-
-    env_name = os.environ.get("INFISICAL_ENV", "").strip() or "dev"
-    cmd = ["infisical", "secrets", "get", "XAI_API_KEY", "--plain", "--silent", "--env", env_name]
-    if project:
-        cmd.extend(["--projectId", project])
-
-    if runner is not None:
-        code, out, err = runner(cmd)
-    else:
-        exe = shutil.which("infisical")
-        if not exe:
-            return _remember_infisical("unavailable", clock, True)
-        try:
-            completed = subprocess.run(
-                [exe, *cmd[1:]],
-                cwd=repo_root(),
-                capture_output=True,
-                timeout=20,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return _remember_infisical("unavailable", clock, True)
-        code = completed.returncode
-        out = completed.stdout.decode("utf-8", "replace").strip()
-        err = completed.stderr.decode("utf-8", "replace")
-
-    if code == 0 and out and "\n" not in out and "\r" not in out and len(out) >= 12:
-        os.environ["XAI_API_KEY"] = out
-        if runner is None:
-            _infisical_cache["outcome"] = "present"
-            _infisical_cache["until"] = clock + 3600
-        return "present"
-    if "projectId" in err or "infisical init" in err:
-        return _remember_infisical("unlinked", clock, runner is None)
-    return _remember_infisical("missing", clock, runner is None)
-
-
-def _remember_infisical(outcome: str, clock: float, cache: bool) -> str:
-    if cache:
-        _infisical_cache["outcome"] = outcome
-        _infisical_cache["until"] = clock + 15
-    return outcome
+def _use_api_key() -> bool:
+    return os.environ.get("STARLIGHT_XVOICE_USE_API_KEY", "").strip() == "1"
 
 
 def token_status() -> dict[str, object]:
+    """Own-account login first. Infisical is OpenRouter and is not read here."""
+
     load_local_env()
-    infisical = load_infisical_key()
-    env_key = os.environ.get("XAI_API_KEY", "").strip()
     path = _grok_auth_path()
-    if infisical == "present":
-        return {"present": True, "source": "infisical", "infisical": infisical}
-    if env_key:
-        return {"present": True, "source": "env", "infisical": infisical}
     if token_from_grok_auth(path):
-        return {"present": True, "source": "grok-cli", "infisical": infisical}
+        return {"present": True, "source": "grok-cli"}
+    if _use_api_key() and os.environ.get("XAI_API_KEY", "").strip():
+        return {"present": True, "source": "api-key"}
     if path.is_file():
-        return {"present": False, "source": "grok-cli-expired", "infisical": infisical}
-    return {"present": False, "source": "missing", "infisical": infisical}
+        return {"present": False, "source": "grok-cli-expired"}
+    return {"present": False, "source": "missing"}
 
 
 def resolve_token() -> str | None:
     load_local_env()
-    infisical = load_infisical_key()
-    if infisical == "present" or os.environ.get("XAI_API_KEY", "").strip():
+    account = token_from_grok_auth(_grok_auth_path())
+    if account:
+        return account
+    if _use_api_key():
         return os.environ.get("XAI_API_KEY", "").strip() or None
-    return token_from_grok_auth(_grok_auth_path())
+    return None
 
 
 def clap_selfcheck() -> bool:
@@ -338,7 +274,7 @@ def readiness() -> dict[str, object]:
     ready = bool(token["present"] and audio and sockets and script and clap_ok)
     missing = []
     if not token["present"]:
-        missing.append("XAI_API_KEY")
+        missing.append("grok-cli")
     if not audio:
         missing.append("sounddevice")
     if not sockets:
@@ -358,7 +294,6 @@ def readiness() -> dict[str, object]:
         "missing": missing,
         "voice": voice_name(),
         "reasoning": reasoning_effort(),
-        "infisical": token.get("infisical"),
         "open": "two claps",
         "close": "two claps, or 45s of quiet",
     }
@@ -680,7 +615,7 @@ async def _run_socket(
 async def run_text(text: str) -> int:
     token = resolve_token()
     if not token:
-        print("XAI_API_KEY is missing. Save it in Infisical, or put it in .env.local.", flush=True)
+        print("Grok CLI login is missing or expired. Sign in with grok. This socket does not read Infisical.", flush=True)
         return 2
     ear = Ear()
     try:
@@ -715,7 +650,7 @@ async def run_text(text: str) -> int:
 async def run_clap_loop() -> int:
     report = readiness()
     if not report["token"]:
-        print("Armed only after a token. Save XAI_API_KEY in Infisical, or in .env.local.", flush=True)
+        print("Armed only after the Grok CLI login. This socket does not read Infisical.", flush=True)
         print(json.dumps(report, separators=(",", ":")), flush=True)
         return 2
     if not report["sounddevice"] or not report["websockets"]:
@@ -736,15 +671,10 @@ async def run_clap_loop() -> int:
     except Exception as exc:
         print(f"microphone unavailable: {safe_error(exc)}", flush=True)
         return 2
-    where = report.get("infisical")
-    extra = ""
-    if where == "unlinked":
-        extra = " Infisical is not linked yet, so this login is the grok CLI."
-    elif where == "missing":
-        extra = " Infisical has no XAI_API_KEY yet, so this login is the grok CLI."
     print(
         f"armed. mic: {ear.mic_name}. voice: {voice_name()}. reasoning: {reasoning_effort()}. "
-        f"key: {report['token_source']}.{extra} One clap ticks. Two claps open Grok Voice. Two claps close it.",
+        f"key: {report['token_source']}. Account login. Infisical is not used. "
+        "One clap ticks. Two claps open Grok Voice. Two claps close it.",
         flush=True,
     )
     try:

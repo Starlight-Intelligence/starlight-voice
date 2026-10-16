@@ -1,5 +1,4 @@
 import json
-import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -9,9 +8,9 @@ from starlight_voice.meta_harness import route_work
 from starlight_voice.x_voice import (
     audio_delta,
     function_output,
-    load_infisical_key,
     note_transcript,
     parse_arguments,
+    resolve_token,
     session_update,
     token_from_grok_auth,
 )
@@ -33,30 +32,23 @@ def test_session_update_pins_grok_voice_and_the_harness_tool(monkeypatch) -> Non
     assert "web_search" in session["instructions"]
 
 
-def test_infisical_pull_stores_the_key_without_returning_it(monkeypatch) -> None:
-    monkeypatch.delenv("XAI_API_KEY", raising=False)
-    monkeypatch.setenv("INFISICAL_PROJECT_ID", "proj_test")
-    seen: dict[str, list[str]] = {}
-
-    def runner(cmd: list[str]) -> tuple[int, str, str]:
-        seen["cmd"] = cmd
-        return 0, "test-token-not-real", ""
-
-    outcome = load_infisical_key(runner=runner, now=0)
-    assert outcome == "present"
-    assert os.environ["XAI_API_KEY"] == "test-token-not-real"
-    assert "test-token-not-real" not in outcome
-    assert seen["cmd"][seen["cmd"].index("--projectId") + 1] == "proj_test"
+def test_account_login_beats_an_env_api_key(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "auth.json"
+    future = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+    path.write_text(json.dumps({"acct": {"key": "test-token-not-real", "expires_at": future}}), encoding="utf-8")
+    monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(path))
+    monkeypatch.setenv("XAI_API_KEY", "openrouter-key-not-for-this-socket")
+    monkeypatch.delenv("STARLIGHT_XVOICE_USE_API_KEY", raising=False)
+    assert resolve_token() == "test-token-not-real"
 
 
-def test_infisical_unlinked_does_not_spawn(monkeypatch) -> None:
-    monkeypatch.delenv("XAI_API_KEY", raising=False)
-    monkeypatch.delenv("INFISICAL_PROJECT_ID", raising=False)
-
-    def runner(cmd: list[str]) -> tuple[int, str, str]:
-        raise AssertionError(cmd)
-
-    assert load_infisical_key(runner=runner, now=0) == "unlinked"
+def test_console_api_key_is_opt_in(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-not-real")
+    monkeypatch.delenv("STARLIGHT_XVOICE_USE_API_KEY", raising=False)
+    assert resolve_token() is None
+    monkeypatch.setenv("STARLIGHT_XVOICE_USE_API_KEY", "1")
+    assert resolve_token() == "xai-test-not-real"
 
 
 def test_audio_and_transcript_extractors() -> None:
