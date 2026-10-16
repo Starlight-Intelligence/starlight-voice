@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from starlight_voice.meta_harness import route_work
 from starlight_voice.x_voice import (
     audio_delta,
     function_output,
+    load_infisical_key,
     note_transcript,
     parse_arguments,
     session_update,
@@ -15,16 +17,46 @@ from starlight_voice.x_voice import (
 )
 
 
-def test_session_update_pins_grok_voice_and_the_harness_tool() -> None:
+def test_session_update_pins_grok_voice_and_the_harness_tool(monkeypatch) -> None:
+    monkeypatch.delenv("STARLIGHT_XVOICE_VOICE", raising=False)
+    monkeypatch.delenv("STARLIGHT_XVOICE_REASONING", raising=False)
     message = session_update()
     session = message["session"]
-    assert session["voice"]
+    assert session["voice"] == "ara"
     assert session["turn_detection"]["type"] == "server_vad"
-    assert session["reasoning"]["effort"] == "none"
+    assert session["reasoning"]["effort"] == "high"
     assert session["audio"]["input"]["format"]["rate"] == 24000
     assert session["audio"]["output"]["format"]["rate"] == 24000
-    assert session["tools"][0]["name"] == "meta_harness"
+    names = [tool.get("name") or tool.get("type") for tool in session["tools"]]
+    assert names == ["web_search", "x_search", "meta_harness"]
     assert "started is always false" in session["instructions"]
+    assert "web_search" in session["instructions"]
+
+
+def test_infisical_pull_stores_the_key_without_returning_it(monkeypatch) -> None:
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setenv("INFISICAL_PROJECT_ID", "proj_test")
+    seen: dict[str, list[str]] = {}
+
+    def runner(cmd: list[str]) -> tuple[int, str, str]:
+        seen["cmd"] = cmd
+        return 0, "test-token-not-real", ""
+
+    outcome = load_infisical_key(runner=runner, now=0)
+    assert outcome == "present"
+    assert os.environ["XAI_API_KEY"] == "test-token-not-real"
+    assert "test-token-not-real" not in outcome
+    assert seen["cmd"][seen["cmd"].index("--projectId") + 1] == "proj_test"
+
+
+def test_infisical_unlinked_does_not_spawn(monkeypatch) -> None:
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("INFISICAL_PROJECT_ID", raising=False)
+
+    def runner(cmd: list[str]) -> tuple[int, str, str]:
+        raise AssertionError(cmd)
+
+    assert load_infisical_key(runner=runner, now=0) == "unlinked"
 
 
 def test_audio_and_transcript_extractors() -> None:

@@ -17,7 +17,9 @@ import ctypes
 import json
 import math
 import os
+import shutil
 import struct
+import subprocess
 import threading
 import time
 from collections.abc import Sequence
@@ -37,13 +39,23 @@ MAX_SESSION_S = 600
 _AUDIO_EVENTS = {"response.output_audio.delta", "response.audio.delta"}
 
 INSTRUCTIONS = (
-    "You are Starlight, Frank's voice operator. "
-    "Speak in two short sentences at most. Lead with the action. "
+    "You are Starlight, speaking to Frank. "
+    "Your voice is Ara: warm, clear, and unhurried. "
+    "Two sentences unless he asks you to continue. Lead with the answer. "
     "When he asks for code, review, dispatch, a repo, or estate work, "
-    "call meta_harness before you answer. Say the seat it returns. "
-    "started is always false. Do not say the work has begun. "
-    "Do not send, spend, merge, publish, or delete. "
-    "If he is only talking, answer and skip the tool."
+    "call meta_harness before you answer. Say the seat by name. "
+    "Say that you held it. started is always false. "
+    "Do not say the work has begun. Do not send, spend, merge, publish, or delete. "
+    "Do not open another Queen. The meta harness is the seat lookup. "
+    "For facts or what is happening now, use web_search. "
+    "For what people are saying on X, use x_search. "
+    "If he is only talking, answer and skip the tools. "
+    "If a tool fails, say so in one sentence and stop."
+)
+
+_SERVER_TOOLS = (
+    {"type": "web_search"},
+    {"type": "x_search"},
 )
 
 _TOOL = {
@@ -69,19 +81,41 @@ _TOOL = {
 }
 
 
+def voice_name() -> str:
+    return os.environ.get("STARLIGHT_XVOICE_VOICE", "ara").strip() or "ara"
+
+
+def reasoning_effort() -> str:
+    effort = os.environ.get("STARLIGHT_XVOICE_REASONING", "high").strip().lower() or "high"
+    if effort not in {"high", "none"}:
+        return "high"
+    return effort
+
+
 def session_update() -> dict[str, object]:
     return {
         "type": "session.update",
         "session": {
-            "voice": os.environ.get("STARLIGHT_XVOICE_VOICE", "eve").strip() or "eve",
+            "voice": voice_name(),
             "instructions": INSTRUCTIONS,
-            "reasoning": {"effort": "none"},
+            "reasoning": {"effort": reasoning_effort()},
             "turn_detection": {"type": "server_vad"},
-            "tools": [_TOOL],
+            "tools": [*_SERVER_TOOLS, _TOOL],
             "audio": {
                 "input": {
                     "format": {"type": "audio/pcm", "rate": SAMPLE_RATE},
-                    "transcription": {"keyterms": ["Starlight", "Frank", "Codex", "Claude", "Grok"]},
+                    "transcription": {
+                        "keyterms": [
+                            "Starlight",
+                            "Frank",
+                            "Codex",
+                            "Claude",
+                            "Grok",
+                            "Queen",
+                            "Arcanea",
+                            "Infisical",
+                        ]
+                    },
                 },
                 "output": {"format": {"type": "audio/pcm", "rate": SAMPLE_RATE}},
             },
@@ -182,41 +216,109 @@ def token_from_grok_auth(path: Path, now: datetime | None = None) -> str | None:
     return token or None
 
 
+_infisical_cache: dict[str, object] = {"outcome": "", "until": 0.0}
+
+
+def load_infisical_key(runner=None, now: float | None = None) -> str:
+    """Pull XAI_API_KEY from Infisical.
+
+    Returns present, missing, unlinked, or unavailable. On present, the value
+    is written to the process environment and is not returned or logged.
+    """
+
+    clock = time.monotonic() if now is None else now
+    if runner is None and _infisical_cache["outcome"] == "present" and os.environ.get("XAI_API_KEY", "").strip():
+        return "present"
+    if runner is None and clock < float(_infisical_cache["until"] or 0.0):
+        cached = str(_infisical_cache["outcome"] or "")
+        if cached:
+            return cached
+
+    project = os.environ.get("INFISICAL_PROJECT_ID", "").strip()
+    linked = (repo_root() / ".infisical.json").is_file()
+    if not project and not linked:
+        return _remember_infisical("unlinked", clock, runner is None)
+
+    env_name = os.environ.get("INFISICAL_ENV", "").strip() or "dev"
+    cmd = ["infisical", "secrets", "get", "XAI_API_KEY", "--plain", "--silent", "--env", env_name]
+    if project:
+        cmd.extend(["--projectId", project])
+
+    if runner is not None:
+        code, out, err = runner(cmd)
+    else:
+        exe = shutil.which("infisical")
+        if not exe:
+            return _remember_infisical("unavailable", clock, True)
+        try:
+            completed = subprocess.run(
+                [exe, *cmd[1:]],
+                cwd=repo_root(),
+                capture_output=True,
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return _remember_infisical("unavailable", clock, True)
+        code = completed.returncode
+        out = completed.stdout.decode("utf-8", "replace").strip()
+        err = completed.stderr.decode("utf-8", "replace")
+
+    if code == 0 and out and "\n" not in out and "\r" not in out and len(out) >= 12:
+        os.environ["XAI_API_KEY"] = out
+        if runner is None:
+            _infisical_cache["outcome"] = "present"
+            _infisical_cache["until"] = clock + 3600
+        return "present"
+    if "projectId" in err or "infisical init" in err:
+        return _remember_infisical("unlinked", clock, runner is None)
+    return _remember_infisical("missing", clock, runner is None)
+
+
+def _remember_infisical(outcome: str, clock: float, cache: bool) -> str:
+    if cache:
+        _infisical_cache["outcome"] = outcome
+        _infisical_cache["until"] = clock + 15
+    return outcome
+
+
 def token_status() -> dict[str, object]:
     load_local_env()
+    infisical = load_infisical_key()
     env_key = os.environ.get("XAI_API_KEY", "").strip()
-    if env_key:
-        return {"present": True, "source": "env"}
     path = _grok_auth_path()
+    if infisical == "present":
+        return {"present": True, "source": "infisical", "infisical": infisical}
+    if env_key:
+        return {"present": True, "source": "env", "infisical": infisical}
     if token_from_grok_auth(path):
-        return {"present": True, "source": "grok-cli"}
+        return {"present": True, "source": "grok-cli", "infisical": infisical}
     if path.is_file():
-        return {"present": False, "source": "grok-cli-expired"}
-    return {"present": False, "source": "missing"}
+        return {"present": False, "source": "grok-cli-expired", "infisical": infisical}
+    return {"present": False, "source": "missing", "infisical": infisical}
 
 
 def resolve_token() -> str | None:
     load_local_env()
-    env_key = os.environ.get("XAI_API_KEY", "").strip()
-    if env_key:
-        return env_key
+    infisical = load_infisical_key()
+    if infisical == "present" or os.environ.get("XAI_API_KEY", "").strip():
+        return os.environ.get("XAI_API_KEY", "").strip() or None
     return token_from_grok_auth(_grok_auth_path())
 
 
 def clap_selfcheck() -> bool:
     detector = ClapDetector(sample_rate=16_000)
-    hop = [0.9] * detector._hop_samples
+    frame = [0.0] * detector._hop_samples
+    frame[0] = 0.9
+    frame[1] = 0.6
     quiet = [0.0] * detector._hop_samples
-    events: list[str] = []
-    for _ in range(2):
-        events.extend(detector.feed(hop))
+    events = list(detector.feed(frame))
     events.extend(detector.feed(quiet))
-    for _ in range(30):
+    for _ in range(40):
         events.extend(detector.feed(quiet))
-    for _ in range(2):
-        events.extend(detector.feed(hop))
+    events.extend(detector.feed(frame))
     events.extend(detector.feed(quiet))
-    return events == ["toggle"]
+    return events == ["clap", "toggle"]
 
 
 def _module_present(name: str) -> bool:
@@ -254,6 +356,9 @@ def readiness() -> dict[str, object]:
         "dispatch_script": script,
         "clap_ok": clap_ok,
         "missing": missing,
+        "voice": voice_name(),
+        "reasoning": reasoning_effort(),
+        "infisical": token.get("infisical"),
         "open": "two claps",
         "close": "two claps, or 45s of quiet",
     }
@@ -303,6 +408,12 @@ def _tone(freq: float, ms: int, amp: float = 0.18) -> bytes:
 def open_chime() -> bytes:
     gap = b"\x00\x00" * int(SAMPLE_RATE * 0.02)
     return _tone(660, 70) + gap + _tone(990, 90)
+
+
+def clap_tick() -> bytes:
+    """Short enough that the playback gate (100 ms) stays open for the second clap."""
+
+    return _tone(880, 28, 0.06)
 
 
 class Ear:
@@ -382,7 +493,10 @@ class Ear:
         samples = struct.unpack(f"<{count}f", raw[: count * 4])
         if not self.playing():
             for event in self.detector.feed(samples):
-                if event == "toggle":
+                if event == "clap":
+                    print("clap", flush=True)
+                    self.play(clap_tick())
+                elif event == "toggle":
                     self.toggle.set()
         if self.session_open and not self.playing():
             pcm = float32_to_pcm16le(samples)
@@ -566,7 +680,7 @@ async def _run_socket(
 async def run_text(text: str) -> int:
     token = resolve_token()
     if not token:
-        print("XAI_API_KEY is missing. Put it in .env.local. The grok CLI login was not usable.", flush=True)
+        print("XAI_API_KEY is missing. Save it in Infisical, or put it in .env.local.", flush=True)
         return 2
     ear = Ear()
     try:
@@ -601,7 +715,7 @@ async def run_text(text: str) -> int:
 async def run_clap_loop() -> int:
     report = readiness()
     if not report["token"]:
-        print("Armed only after a token. Set XAI_API_KEY in .env.local.", flush=True)
+        print("Armed only after a token. Save XAI_API_KEY in Infisical, or in .env.local.", flush=True)
         print(json.dumps(report, separators=(",", ":")), flush=True)
         return 2
     if not report["sounddevice"] or not report["websockets"]:
@@ -622,7 +736,17 @@ async def run_clap_loop() -> int:
     except Exception as exc:
         print(f"microphone unavailable: {safe_error(exc)}", flush=True)
         return 2
-    print(f"armed. mic: {ear.mic_name}. two claps open Grok Voice. two claps close it.", flush=True)
+    where = report.get("infisical")
+    extra = ""
+    if where == "unlinked":
+        extra = " Infisical is not linked yet, so this login is the grok CLI."
+    elif where == "missing":
+        extra = " Infisical has no XAI_API_KEY yet, so this login is the grok CLI."
+    print(
+        f"armed. mic: {ear.mic_name}. voice: {voice_name()}. reasoning: {reasoning_effort()}. "
+        f"key: {report['token_source']}.{extra} One clap ticks. Two claps open Grok Voice. Two claps close it.",
+        flush=True,
+    )
     try:
         while True:
             ear.toggle.clear()
@@ -631,6 +755,9 @@ async def run_clap_loop() -> int:
             ear.clear_play()
             ear.play(open_chime())
             print("open", flush=True)
+            fresh = resolve_token()
+            if fresh:
+                token = fresh
             closed = asyncio.Event()
             started = time.monotonic()
             idle = {"at": started}
