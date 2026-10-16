@@ -8,4 +8,6 @@ The open gesture is two claps. One clap stays shut. Speech stays shut. A second 
 
 The voice socket uses the signed-in Grok CLI account. Infisical holds OpenRouter, and this socket does not read it. Never commit keys. The voice is `ara`. Reasoning is `high`.
 
-Checks for this slice: `python -m pytest sidecar/tests/test_clap.py sidecar/tests/test_x_voice.py` from the repo root, with `PYTHONPATH=sidecar/src`.
+The live page is `http://127.0.0.1:8765/live`. It watches the clap listener. It does not open a second microphone. Stop the current listen before starting the next one.
+
+Checks for this slice: `python -m pytest sidecar/tests/test_clap.py sidecar/tests/test_x_voice.py sidecar/tests/test_session_store.py` from the repo root, with `PYTHONPATH=sidecar/src`.

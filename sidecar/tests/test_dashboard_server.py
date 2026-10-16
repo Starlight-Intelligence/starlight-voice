@@ -34,6 +34,19 @@ def live_server():
         srv.shutdown()
 
 
+def test_live_page_and_api(live_server, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("STARLIGHT_VOICE_STATE_DIR", str(tmp_path))
+    from starlight_voice.session_store import publish
+
+    publish("armed", voice="ara", memory="idle")
+    page = urllib.request.urlopen(live_server + "/live", timeout=5)
+    assert b"Live session" in page.read()
+    body = json.loads(urllib.request.urlopen(live_server + "/api/live", timeout=5).read())
+    assert body["phase"] == "armed"
+    sessions = json.loads(urllib.request.urlopen(live_server + "/api/sessions", timeout=5).read())
+    assert sessions["sessions"] == []
+
+
 def test_healthz_ok(live_server) -> None:
     resp = urllib.request.urlopen(live_server + "/healthz", timeout=5)
     assert json.loads(resp.read())["ok"] is True
@@ -68,7 +81,9 @@ def test_status_endpoint_returns_live_state(live_server) -> None:
     resp = urllib.request.urlopen(live_server + "/status", timeout=5)
     data = json.loads(resp.read())
     assert "variants" in data and "settings" in data  # cockpit's data source
-    assert {v["key"] for v in data["variants"]} == {"component", "openai-realtime", "gemini-live"}
+    assert {v["key"] for v in data["variants"]} == {"component", "openai-realtime", "gemini-live", "x-voice"}
+    assert data["live"]["phase"] in {"stopped", "armed", "open", "speaking"}
+    assert isinstance(data["sessions"], list)
 
 
 def test_unknown_post_route_404(live_server) -> None:

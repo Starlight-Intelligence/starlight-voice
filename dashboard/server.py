@@ -51,6 +51,9 @@ STATIC: dict[str, tuple[Path, str]] = {
     "/voice/voice.css": (VOICE / "voice.css", _CT_CSS),
     "/voice/voice.js": (VOICE / "voice.js", _CT_JS),
     "/voice/voice-runtime.mjs": (VOICE / "voice-runtime.mjs", _CT_JS),
+    "/live": (DASH / "live.html", _CT_HTML),
+    "/live.html": (DASH / "live.html", _CT_HTML),
+    "/live.css": (DASH / "live.css", _CT_CSS),
 }
 
 
@@ -87,6 +90,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/status":
             self._json(200, _system_status())
+            return
+        if path == "/api/live":
+            from starlight_voice.session_store import read_live
+
+            self._json(200, read_live())
+            return
+        if path == "/api/sessions":
+            from starlight_voice.session_store import read_sessions
+
+            self._json(200, {"sessions": read_sessions(20)})
             return
         entry = STATIC.get(path)
         if entry is None:

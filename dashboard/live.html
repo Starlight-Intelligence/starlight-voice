@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Starlight Voice live</title>
+    <link rel="stylesheet" href="/live.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p>Starlight Voice</p>
+          <h1>Live session</h1>
+        </div>
+        <a href="/dashboard/cockpit.html">Operator console</a>
+      </header>
+      <div class="phase" id="phase" data-phase="stopped" aria-live="polite">stopped</div>
+      <p class="line" id="line">No transcript yet.</p>
+      <dl>
+        <dt>Voice</dt><dd id="voice">ara</dd>
+        <dt>Reasoning</dt><dd id="reasoning">high</dd>
+        <dt>Memory</dt><dd id="memory">unavailable</dd>
+        <dt>Session</dt><dd id="session">none</dd>
+        <dt>Conversation</dt><dd id="conversation">none</dd>
+        <dt>Microphone</dt><dd id="mic">the listener owns it</dd>
+      </dl>
+      <p class="reload" id="reload">This page only watches. It does not open the microphone or your signed-in browsers.</p>
+      <h2>Recent session events</h2>
+      <ul id="sessions"></ul>
+    </main>
+    <script>
+      const text = (id, value) => {
+        const node = document.getElementById(id);
+        node.textContent = value || "none";
+      };
+      async function tick() {
+        try {
+          const live = await fetch("/api/live").then((response) => response.json());
+          const phase = live.phase || "stopped";
+          const orb = document.getElementById("phase");
+          orb.dataset.phase = phase;
+          orb.textContent = phase;
+          text("line", live.line || "No transcript yet.");
+          text("voice", live.voice || "ara");
+          text("reasoning", live.reasoning || "high");
+          text("memory", live.memory || "unavailable");
+          text("session", live.session_id);
+          text("conversation", live.conversation_id);
+          text("mic", live.mic || "the listener owns it");
+          text("reload", live.reload || document.getElementById("reload").textContent);
+          const sessions = await fetch("/api/sessions").then((response) => response.json());
+          const list = document.getElementById("sessions");
+          list.replaceChildren();
+          for (const row of (sessions.sessions || []).slice().reverse()) {
+            const item = document.createElement("li");
+            item.textContent = [row.kind, row.session_id, row.line || row.memory || ""].filter(Boolean).join(" · ");
+            list.appendChild(item);
+          }
+        } catch {
+          text("phase", "page cannot reach the listener");
+        }
+      }
+      tick();
+      setInterval(tick, 1000);
+    </script>
+  </body>
+</html>
