@@ -33,8 +33,12 @@ def main(argv: list[str] | None = None) -> int:
     voice = sub.add_parser("voice", help="Voice loop: readiness (default), --selftest (assemble graph), --run (live)")
     voice.add_argument("--selftest", action="store_true", help="Construct the cloud graph headlessly (no mic) and report")
     voice.add_argument("--run", action="store_true", help="Open mic/speakers and run the live loop (needs the voice extra)")
-    voice.add_argument("--variant", choices=["component", "openai-realtime", "gemini-live"],
+    voice.add_argument("--variant", choices=["component", "openai-realtime", "gemini-live", "x-voice"],
                        help="Bake-off lane: which architecture to selftest/run (default: component)")
+
+    listen = sub.add_parser("listen", help="Double-clap opens xAI Grok Voice, routed through the meta harness")
+    listen.add_argument("--check", action="store_true", help="Print readiness JSON and exit")
+    listen.add_argument("--text", default="", help="One spoken text turn, then exit")
 
     disp = sub.add_parser("dispatch", help="Route a coding task to the fleet (dry-run packet preview)")
     disp.add_argument("task", nargs="+")
@@ -103,6 +107,11 @@ def main(argv: list[str] | None = None) -> int:
         spoken = synthesize_spoken(brief) if args.speak else brief.headline()
         print(json.dumps({"brief_file": str(out), "count": len(brief.items), "spoken": spoken}, separators=(",", ":")))
         return 0
+
+    if args.command == "listen":
+        from .x_voice import run_listen
+
+        return run_listen(check=args.check, text=args.text)
 
     if args.command == "voice":
         if args.variant:  # bake-off lane (component / openai-realtime / gemini-live)

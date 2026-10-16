@@ -11,6 +11,10 @@ dependencies = []
 # Groq+OpenRouter+ElevenLabs keys). Heavy local GPU models are the optional `voice-local`
 # offline tier. Pins verified against the 2026-06-15 research synthesis.
 [project.optional-dependencies]
+x-voice = [
+  "sounddevice>=0.5",
+  "websockets>=12",
+]
 voice = [
   # Pipecat 1.0+ orchestrating CLOUD services + local mic/speaker I/O. No GPU/CUDA.
   # silero/smart-turn (auto turn-detection, may pull torch) are NOT here — PTT-first gates

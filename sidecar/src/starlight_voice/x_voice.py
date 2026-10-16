@@ -1,0 +1,696 @@
+"""xAI Grok Voice session for the Starlight operator.
+
+Clap twice to open. Speak. Work requests call ``meta_harness``, which asks
+the estate dispatch table for a seat and does not spawn. Clap twice again,
+or stay quiet, and the socket closes so the minute meter stops.
+
+Protocol checked against docs.x.ai speech-to-speech on 2026-10-16:
+``wss://api.x.ai/v1/realtime?model=grok-voice-latest``, PCM16 24 kHz,
+``response.function_call_arguments.done``, then ``function_call_output``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import ctypes
+import json
+import math
+import os
+import struct
+import threading
+import time
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from pathlib import Path
+
+from .audio_contract import float32_to_pcm16le
+from .clap import ClapDetector
+from .config import load_local_env, repo_root
+from .meta_harness import JOBS, dispatch_script, route_work
+
+MODEL = "grok-voice-latest"
+REALTIME_URL = f"wss://api.x.ai/v1/realtime?model={MODEL}"
+SAMPLE_RATE = 24_000
+IDLE_CLOSE_S = 45
+MAX_SESSION_S = 600
+_AUDIO_EVENTS = {"response.output_audio.delta", "response.audio.delta"}
+
+INSTRUCTIONS = (
+    "You are Starlight, Frank's voice operator. "
+    "Speak in two short sentences at most. Lead with the action. "
+    "When he asks for code, review, dispatch, a repo, or estate work, "
+    "call meta_harness before you answer. Say the seat it returns. "
+    "started is always false. Do not say the work has begun. "
+    "Do not send, spend, merge, publish, or delete. "
+    "If he is only talking, answer and skip the tool."
+)
+
+_TOOL = {
+    "type": "function",
+    "name": "meta_harness",
+    "description": (
+        "Route one spoken work request through the Starlight meta harness. "
+        "Returns the seat. Does not start the seat."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "utterance": {"type": "string", "description": "What Frank asked, verbatim."},
+            "job": {"type": "string", "enum": list(JOBS)},
+            "data_class": {
+                "type": "string",
+                "enum": ["public", "secret", "money", "vault", "identity", "canon"],
+            },
+            "dirty": {"type": "boolean", "description": "True when the target tree has uncommitted work."},
+        },
+        "required": ["utterance", "job"],
+    },
+}
+
+
+def session_update() -> dict[str, object]:
+    return {
+        "type": "session.update",
+        "session": {
+            "voice": os.environ.get("STARLIGHT_XVOICE_VOICE", "eve").strip() or "eve",
+            "instructions": INSTRUCTIONS,
+            "reasoning": {"effort": "none"},
+            "turn_detection": {"type": "server_vad"},
+            "tools": [_TOOL],
+            "audio": {
+                "input": {
+                    "format": {"type": "audio/pcm", "rate": SAMPLE_RATE},
+                    "transcription": {"keyterms": ["Starlight", "Frank", "Codex", "Claude", "Grok"]},
+                },
+                "output": {"format": {"type": "audio/pcm", "rate": SAMPLE_RATE}},
+            },
+        },
+    }
+
+
+def audio_delta(event: dict) -> str | None:
+    if event.get("type") not in _AUDIO_EVENTS:
+        return None
+    for key in ("delta", "audio"):
+        value = event.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def note_transcript(event: dict) -> str | None:
+    text = event.get("transcript")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    kind = str(event.get("type") or "")
+    if "transcript" not in kind and "transcription" not in kind:
+        return None
+    who = "you" if "input" in kind else "starlight"
+    return f"{who}: {text.strip()}"
+
+
+def function_output(call_id: str, result: dict) -> dict[str, object]:
+    return {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": json.dumps(result, separators=(",", ":")),
+        },
+    }
+
+
+def parse_arguments(raw: object) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("tool arguments must be an object")
+    return value
+
+
+def handle_meta_harness(arguments: dict) -> dict[str, object]:
+    try:
+        return route_work(
+            utterance=str(arguments.get("utterance") or ""),
+            job=str(arguments.get("job") or "dispatch"),
+            data_class=str(arguments.get("data_class") or "public"),
+            dirty=bool(arguments.get("dirty") or False),
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "started": False,
+            "spoken": "Meta harness did not answer. I did not start anything.",
+            "error": type(exc).__name__,
+        }
+
+
+def _grok_auth_path() -> Path:
+    override = os.environ.get("STARLIGHT_GROK_AUTH", "").strip()
+    return Path(override) if override else Path.home() / ".grok" / "auth.json"
+
+
+def token_from_grok_auth(path: Path, now: datetime | None = None) -> str | None:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    record = None
+    if isinstance(data, dict):
+        for value in data.values():
+            if isinstance(value, dict) and value.get("key") and value.get("expires_at"):
+                record = value
+                break
+    if record is None:
+        return None
+    stamp = str(record["expires_at"]).replace("Z", "+00:00")
+    try:
+        expires = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    if expires <= (now or datetime.now(UTC)):
+        return None
+    token = str(record["key"]).strip()
+    return token or None
+
+
+def token_status() -> dict[str, object]:
+    load_local_env()
+    env_key = os.environ.get("XAI_API_KEY", "").strip()
+    if env_key:
+        return {"present": True, "source": "env"}
+    path = _grok_auth_path()
+    if token_from_grok_auth(path):
+        return {"present": True, "source": "grok-cli"}
+    if path.is_file():
+        return {"present": False, "source": "grok-cli-expired"}
+    return {"present": False, "source": "missing"}
+
+
+def resolve_token() -> str | None:
+    load_local_env()
+    env_key = os.environ.get("XAI_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    return token_from_grok_auth(_grok_auth_path())
+
+
+def clap_selfcheck() -> bool:
+    detector = ClapDetector(sample_rate=16_000)
+    hop = [0.9] * detector._hop_samples
+    quiet = [0.0] * detector._hop_samples
+    events: list[str] = []
+    for _ in range(2):
+        events.extend(detector.feed(hop))
+    events.extend(detector.feed(quiet))
+    for _ in range(30):
+        events.extend(detector.feed(quiet))
+    for _ in range(2):
+        events.extend(detector.feed(hop))
+    events.extend(detector.feed(quiet))
+    return events == ["toggle"]
+
+
+def _module_present(name: str) -> bool:
+    try:
+        __import__(name)
+    except Exception:
+        return False
+    return True
+
+
+def readiness() -> dict[str, object]:
+    token = token_status()
+    audio = _module_present("sounddevice")
+    sockets = _module_present("websockets")
+    script = dispatch_script().is_file()
+    clap_ok = clap_selfcheck()
+    ready = bool(token["present"] and audio and sockets and script and clap_ok)
+    missing = []
+    if not token["present"]:
+        missing.append("XAI_API_KEY")
+    if not audio:
+        missing.append("sounddevice")
+    if not sockets:
+        missing.append("websockets")
+    if not script:
+        missing.append("dispatch-route")
+    return {
+        "ready": ready,
+        "token": bool(token["present"]),
+        "token_source": token["source"],
+        "model": MODEL,
+        "sample_rate": SAMPLE_RATE,
+        "sounddevice": audio,
+        "websockets": sockets,
+        "dispatch_script": script,
+        "clap_ok": clap_ok,
+        "missing": missing,
+        "open": "two claps",
+        "close": "two claps, or 45s of quiet",
+    }
+
+
+def safe_error(exc: BaseException) -> str:
+    status = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status is None and response is not None:
+        status = getattr(response, "status_code", None)
+    if status:
+        return f"{type(exc).__name__} status={status}"
+    return type(exc).__name__
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    kernel = ctypes.windll.kernel32
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    kernel.CloseHandle(handle)
+    return True
+
+
+def _claim_listener() -> Path | None:
+    path = repo_root() / "memory" / "voice" / "listen.pid"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        try:
+            existing = int(path.read_text(encoding="utf-8").strip() or "0")
+        except ValueError:
+            existing = 0
+        if _pid_alive(existing):
+            return None
+    path.write_text(str(os.getpid()), encoding="utf-8")
+    return path
+
+
+def _tone(freq: float, ms: int, amp: float = 0.18) -> bytes:
+    count = int(SAMPLE_RATE * ms / 1000)
+    samples = [amp * math.sin(2 * math.pi * freq * i / SAMPLE_RATE) for i in range(count)]
+    return float32_to_pcm16le(samples)
+
+
+def open_chime() -> bytes:
+    gap = b"\x00\x00" * int(SAMPLE_RATE * 0.02)
+    return _tone(660, 70) + gap + _tone(990, 90)
+
+
+class Ear:
+    """Mic in, speakers out. Clap detection stays off while audio is playing."""
+
+    def __init__(self) -> None:
+        self.detector = ClapDetector(sample_rate=SAMPLE_RATE)
+        self.toggle = asyncio.Event()
+        self.pcm: asyncio.Queue[bytes] = asyncio.Queue(maxsize=32)
+        self.session_open = False
+        self._play = bytearray()
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._in = None
+        self._out = None
+        self.mic_name = ""
+
+    def start(self) -> None:
+        import sounddevice as sd
+
+        self._loop = asyncio.get_running_loop()
+        try:
+            self.mic_name = str(sd.query_devices(kind="input")["name"])
+        except Exception:
+            self.mic_name = "default"
+        self._in = sd.RawInputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            blocksize=480,
+            callback=self._on_in,
+        )
+        self._out = sd.RawOutputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="int16",
+            blocksize=480,
+            callback=self._on_out,
+        )
+        self._in.start()
+        self._out.start()
+
+    def stop(self) -> None:
+        for stream in (self._in, self._out):
+            if stream is None:
+                continue
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+
+    def play(self, pcm: bytes) -> None:
+        if not pcm:
+            return
+        with self._lock:
+            self._play.extend(pcm)
+
+    def clear_play(self) -> None:
+        with self._lock:
+            self._play.clear()
+
+    def playing(self) -> bool:
+        with self._lock:
+            return len(self._play) > SAMPLE_RATE * 2 // 10  # 100 ms
+
+    def _on_in(self, indata, frames, time_info, status) -> None:
+        if self._loop is None:
+            return
+        raw = bytes(indata)
+        self._loop.call_soon_threadsafe(self._submit, raw)
+
+    def _submit(self, raw: bytes) -> None:
+        count = len(raw) // 4
+        if count == 0:
+            return
+        samples = struct.unpack(f"<{count}f", raw[: count * 4])
+        if not self.playing():
+            for event in self.detector.feed(samples):
+                if event == "toggle":
+                    self.toggle.set()
+        if self.session_open and not self.playing():
+            pcm = float32_to_pcm16le(samples)
+            try:
+                self.pcm.put_nowait(pcm)
+            except asyncio.QueueFull:
+                pass
+
+    def _on_out(self, outdata, frames, time_info, status) -> None:
+        need = frames * 2
+        with self._lock:
+            got = bytes(self._play[:need])
+            del self._play[: len(got)]
+        outdata[:] = got.ljust(need, b"\x00")
+
+
+def _text_item(text: str) -> dict[str, object]:
+    return {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": text}],
+        },
+    }
+
+
+async def _finish_tools(ws, calls: list[dict]) -> None:
+    for event in calls:
+        name = str(event.get("name") or "")
+        call_id = str(event.get("call_id") or "")
+        if name != "meta_harness" or not call_id:
+            result = {"ok": False, "started": False, "spoken": "That tool is not on this operator."}
+        else:
+            try:
+                arguments = parse_arguments(event.get("arguments"))
+            except (json.JSONDecodeError, ValueError):
+                arguments = {}
+            result = handle_meta_harness(arguments)
+        spoken = result.get("spoken")
+        if isinstance(spoken, str):
+            print(spoken, flush=True)
+        await ws.send(json.dumps(function_output(call_id, result)))
+    await ws.send(json.dumps({"type": "response.create"}))
+
+
+async def _pump(ws, ear: Ear | None, *, closed: asyncio.Event, saw: dict[str, bool], activity: dict[str, float] | None = None) -> None:
+    pending: list[dict] = []
+    async for message in ws:
+        if closed.is_set():
+            break
+        if isinstance(message, bytes):
+            continue
+        try:
+            event = json.loads(message)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = str(event.get("type") or "")
+        if os.environ.get("STARLIGHT_XVOICE_DEBUG") and kind not in _AUDIO_EVENTS:
+            print(f"event {kind}", flush=True)
+        if kind == "error":
+            print(f"voice error: {event.get('code') or kind}", flush=True)
+            saw["error"] = True
+            continue
+        if activity is not None and kind in {
+            "input_audio_buffer.speech_started",
+            "response.output_audio.delta",
+            "response.audio.delta",
+            "response.done",
+        }:
+            activity["at"] = time.monotonic()
+        line = note_transcript(event)
+        if line:
+            print(line, flush=True)
+            saw["transcript"] = True
+            if activity is not None:
+                activity["at"] = time.monotonic()
+        delta = audio_delta(event)
+        if delta:
+            try:
+                pcm = base64.b64decode(delta)
+            except (ValueError, TypeError):
+                pcm = b""
+            if pcm:
+                if ear is not None:
+                    ear.play(pcm)
+                if not saw["audio"]:
+                    print("speaking", flush=True)
+                saw["audio"] = True
+        if kind in {"input_audio_buffer.speech_started", "response.cancelled"} and ear is not None:
+            ear.clear_play()
+            saw["speech"] = True
+        if kind == "response.function_call_arguments.done":
+            pending.append(event)
+            continue
+        if kind == "response.done" and pending:
+            calls = pending
+            pending = []
+            await _finish_tools(ws, calls)
+            saw["tool"] = True
+            saw["done"] = False
+        elif kind == "response.done":
+            saw["done"] = True
+
+
+async def _send_mic(ws, ear: Ear, closed: asyncio.Event) -> None:
+    ear.session_open = True
+    try:
+        while not closed.is_set():
+            try:
+                pcm = await asyncio.wait_for(ear.pcm.get(), timeout=0.2)
+            except TimeoutError:
+                continue
+            if closed.is_set():
+                break
+            payload = base64.b64encode(pcm).decode("ascii")
+            await ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": payload}))
+    finally:
+        ear.session_open = False
+
+
+async def _run_socket(
+    token: str,
+    ear: Ear | None,
+    *,
+    text: str,
+    closed: asyncio.Event,
+    activity: dict[str, float] | None = None,
+) -> dict[str, bool]:
+    import websockets
+
+    saw = {"audio": False, "transcript": False, "tool": False, "done": False, "error": False, "speech": False}
+    async with websockets.connect(
+        REALTIME_URL,
+        additional_headers={"Authorization": f"Bearer {token}"},
+        max_size=8_000_000,
+    ) as ws:
+        await ws.send(json.dumps(session_update()))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            raw = await asyncio.wait_for(ws.recv(), timeout=5)
+            if isinstance(raw, bytes):
+                continue
+            try:
+                opened = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(opened, dict):
+                continue
+            if opened.get("type") == "error":
+                saw["error"] = True
+                print(f"voice error: {opened.get('code') or 'error'}", flush=True)
+                return saw
+            if opened.get("type") == "session.updated":
+                break
+        if text:
+            await ws.send(json.dumps(_text_item(text)))
+            await ws.send(json.dumps({"type": "response.create"}))
+        tasks = [asyncio.create_task(_pump(ws, ear, closed=closed, saw=saw, activity=activity))]
+        if ear is not None and not text:
+            tasks.append(asyncio.create_task(_send_mic(ws, ear, closed)))
+        if text:
+
+            async def _done_watch() -> None:
+                while not closed.is_set():
+                    await asyncio.sleep(0.3)
+                    if saw["done"] and (ear is None or not ear.playing()):
+                        await asyncio.sleep(0.5)
+                        closed.set()
+
+            tasks.append(asyncio.create_task(_done_watch()))
+        await closed.wait()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return saw
+
+
+async def run_text(text: str) -> int:
+    token = resolve_token()
+    if not token:
+        print("XAI_API_KEY is missing. Put it in .env.local. The grok CLI login was not usable.", flush=True)
+        return 2
+    ear = Ear()
+    try:
+        ear.start()
+    except Exception as exc:
+        print(f"speakers unavailable: {safe_error(exc)}", flush=True)
+        ear = None  # type: ignore[assignment]
+    if ear is not None:
+        print(f"mic: {ear.mic_name}", flush=True)
+    closed = asyncio.Event()
+
+    async def _stop_later() -> None:
+        await asyncio.sleep(25)
+        closed.set()
+
+    stopper = asyncio.create_task(_stop_later())
+    try:
+        saw = await _run_socket(token, ear, text=text, closed=closed)
+    except Exception as exc:
+        print(f"voice socket failed: {safe_error(exc)}", flush=True)
+        return 2
+    finally:
+        stopper.cancel()
+        if ear is not None:
+            await asyncio.sleep(0.8)
+            ear.stop()
+    if saw.get("error") and not (saw.get("audio") or saw.get("transcript")):
+        return 2
+    return 0 if saw.get("audio") or saw.get("transcript") or saw.get("tool") else 2
+
+
+async def run_clap_loop() -> int:
+    report = readiness()
+    if not report["token"]:
+        print("Armed only after a token. Set XAI_API_KEY in .env.local.", flush=True)
+        print(json.dumps(report, separators=(",", ":")), flush=True)
+        return 2
+    if not report["sounddevice"] or not report["websockets"]:
+        print("Install the x-voice extra: uv pip install -e '.[x-voice]'", flush=True)
+        print(json.dumps(report, separators=(",", ":")), flush=True)
+        return 2
+    claim = _claim_listener()
+    if claim is None:
+        print("Already listening.", flush=True)
+        return 0
+    token = resolve_token()
+    if not token:
+        print("Token disappeared before open.", flush=True)
+        return 2
+    ear = Ear()
+    try:
+        ear.start()
+    except Exception as exc:
+        print(f"microphone unavailable: {safe_error(exc)}", flush=True)
+        return 2
+    print(f"armed. mic: {ear.mic_name}. two claps open Grok Voice. two claps close it.", flush=True)
+    try:
+        while True:
+            ear.toggle.clear()
+            await ear.toggle.wait()
+            ear.toggle.clear()
+            ear.clear_play()
+            ear.play(open_chime())
+            print("open", flush=True)
+            closed = asyncio.Event()
+            started = time.monotonic()
+            idle = {"at": started}
+
+            async def _watch(started_at: float = started, flag: asyncio.Event = closed) -> None:
+                while not flag.is_set():
+                    await asyncio.sleep(0.2)
+                    if ear.toggle.is_set():
+                        ear.toggle.clear()
+                        print("close", flush=True)
+                        flag.set()
+                        return
+                    if time.monotonic() - started_at > MAX_SESSION_S:
+                        print("close (session cap)", flush=True)
+                        flag.set()
+                        return
+
+            async def _idle(flag: asyncio.Event = closed, box: dict = idle) -> None:
+                while not flag.is_set():
+                    await asyncio.sleep(1)
+                    if ear.playing():
+                        box["at"] = time.monotonic()
+                    if time.monotonic() - box["at"] > IDLE_CLOSE_S:
+                        print("close (quiet)", flush=True)
+                        flag.set()
+
+            watcher = asyncio.create_task(_watch())
+            idler = asyncio.create_task(_idle())
+            try:
+                await _run_socket(token, ear, text="", closed=closed, activity=idle)
+            except Exception as exc:
+                print(f"voice socket failed: {safe_error(exc)}", flush=True)
+                print("armed", flush=True)
+            finally:
+                watcher.cancel()
+                idler.cancel()
+                ear.session_open = False
+                ear.clear_play()
+                while not ear.pcm.empty():
+                    ear.pcm.get_nowait()
+            print("armed", flush=True)
+    finally:
+        ear.stop()
+        try:
+            claim.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def run_listen(*, check: bool = False, text: str = "") -> int:
+    if check:
+        report = readiness()
+        print(json.dumps(report, separators=(",", ":")))
+        return 0 if report["ready"] else 2
+    if text.strip():
+        return asyncio.run(run_text(text.strip()))
+    return asyncio.run(run_clap_loop())
+
+
+def preview_samples(samples: Sequence[float]) -> list[str]:
+    """Test hook. Feed already-normalized samples at the session rate."""
+
+    return ClapDetector(sample_rate=SAMPLE_RATE).feed(samples)
