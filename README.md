@@ -33,6 +33,19 @@ What is still pending:
 - signed installer
 - legacy SIS/Arcanea task migration scripts
 
+## Adopt the clap ear
+
+This is the path another machine can run without this estate.
+
+1. Install Python 3.12 and the `x-voice` extra (`sounddevice`, `websockets`).
+2. Sign in with the grok CLI, or set `XAI_API_KEY` to a value that starts with `xai-`. An OpenRouter key does not open this socket.
+3. From the repo root, `python -m starlight_voice listen --check`. Then `python -m starlight_voice listen`.
+4. Open `http://127.0.0.1:8765/live` for the face. The page does not open a microphone.
+5. Two claps open Ara. One clap ticks. Two claps, or 45 seconds of quiet, close the socket. The day cap is 15 minutes.
+6. A spoken work request emits one dispatch packet and does not start a coding agent.
+
+The grok CLI session skips the xAI spending-limit check and does not turn on server search. An `xai-` key stays closed until `XAI_MANAGEMENT_KEY` and `XAI_TEAM_ID` can read a limit that still has room. Never commit either credential.
+
 ## Quick Start
 
 Prerequisites:

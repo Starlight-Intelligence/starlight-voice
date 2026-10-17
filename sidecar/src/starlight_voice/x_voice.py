@@ -22,6 +22,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -339,19 +340,62 @@ def _env_api_key() -> str | None:
     return value if xai_shaped(value) else None
 
 
+def _grok_auth_path() -> Path:
+    override = os.environ.get("STARLIGHT_GROK_AUTH", "").strip()
+    return Path(override) if override else Path.home() / ".grok" / "auth.json"
+
+
+def token_from_grok_auth(path: Path, now: datetime | None = None) -> str | None:
+    """Signed-in grok CLI session. The value stays with the caller."""
+
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    record = None
+    if isinstance(data, dict):
+        for value in data.values():
+            if isinstance(value, dict) and value.get("key") and value.get("expires_at"):
+                record = value
+                break
+    if record is None:
+        return None
+    stamp = str(record["expires_at"]).replace("Z", "+00:00")
+    try:
+        expires = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    if expires <= (now or datetime.now(UTC)):
+        return None
+    token = str(record["key"]).strip()
+    return token or None
+
+
 def token_status() -> dict[str, object]:
-    """Environment xai- key, then Infisical. No Grok CLI login. The value stays out."""
+    """Grok account first, then an xai- key, then Infisical. The value stays out."""
 
     load_local_env()
+    path = _grok_auth_path()
+    if token_from_grok_auth(path):
+        return {"present": True, "source": "grok-cli"}
     if _env_api_key():
         return {"present": True, "source": "api-key"}
     if key_from_infisical():
         return {"present": True, "source": "infisical"}
+    if path.is_file():
+        return {"present": False, "source": "grok-cli-expired"}
     return {"present": False, "source": "missing"}
 
 
 def resolve_token() -> str | None:
     load_local_env()
+    account = token_from_grok_auth(_grok_auth_path())
+    if account:
+        return account
     env_key = _env_api_key()
     if env_key:
         return env_key
@@ -391,7 +435,8 @@ def _module_present(name: str) -> bool:
 
 def readiness() -> dict[str, object]:
     token = token_status()
-    gate = server_spend_gate()
+    account = token["source"] == "grok-cli"
+    gate = {"ok": True, "why": "grok-account", "spoken": ""} if account else server_spend_gate()
     audio = _module_present("sounddevice")
     sockets = _module_present("websockets")
     script = dispatch_script().is_file()
@@ -399,8 +444,8 @@ def readiness() -> dict[str, object]:
     ready = bool(token["present"] and gate["ok"] and audio and sockets and script and clap_ok)
     missing = []
     if not token["present"]:
-        missing.append("xai-key")
-    if not gate["ok"]:
+        missing.append("grok-cli-expired" if token["source"] == "grok-cli-expired" else "xai-key")
+    if not account and not gate["ok"]:
         missing.append("xai-spend-limit")
     if not audio:
         missing.append("sounddevice")

@@ -29,10 +29,17 @@ from starlight_voice.x_voice import (
     key_from_infisical,
     note_transcript,
     parse_arguments,
+    readiness,
     resolve_token,
     server_tool_hit,
     session_update,
+    token_status,
 )
+
+
+@pytest.fixture(autouse=True)
+def _hide_live_grok_login(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(tmp_path / "missing-auth.json"))
 
 
 def _decision(primary: str = "claude-local", spawn: bool = True) -> str:
@@ -67,25 +74,54 @@ def test_session_update_pins_grok_voice_and_the_harness_tool(monkeypatch) -> Non
     assert "dirty" not in meta["parameters"]["properties"]
 
 
-def test_token_order_is_env_then_infisical_and_cli_login_is_ignored(monkeypatch, tmp_path: Path) -> None:
+def test_grok_account_is_first(monkeypatch, tmp_path: Path) -> None:
     auth = tmp_path / "auth.json"
     auth.write_text(json.dumps({"acct": {"key": "cli-token-not-real", "expires_at": "2099-01-01T00:00:00+00:00"}}), encoding="utf-8")
     monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(auth))
-    monkeypatch.setenv("STARLIGHT_XVOICE_USE_API_KEY", "0")
-    monkeypatch.setenv("STARLIGHT_XVOICE_GROK_CLI", "1")
     monkeypatch.setenv("XAI_API_KEY", "xai-test-not-real")
-    assert resolve_token() == "xai-test-not-real"
+    monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "0")
+    assert resolve_token() == "cli-token-not-real"
+    assert token_status()["source"] == "grok-cli"
 
 
-def test_grok_cli_login_alone_is_not_a_token(monkeypatch, tmp_path: Path) -> None:
+def test_expired_grok_account_falls_through_to_an_xai_key(monkeypatch, tmp_path: Path) -> None:
     auth = tmp_path / "auth.json"
-    auth.write_text(json.dumps({"acct": {"key": "cli-token-not-real", "expires_at": "2099-01-01T00:00:00+00:00"}}), encoding="utf-8")
+    auth.write_text(json.dumps({"acct": {"key": "cli-token-not-real", "expires_at": "2000-01-01T00:00:00+00:00"}}), encoding="utf-8")
     monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(auth))
-    monkeypatch.setenv("STARLIGHT_XVOICE_USE_API_KEY", "0")
-    monkeypatch.setenv("STARLIGHT_XVOICE_GROK_CLI", "1")
-    monkeypatch.setenv("XAI_API_KEY", "")
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-not-real")
+    monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "0")
+    assert resolve_token() == "xai-test-not-real"
+    assert token_status()["source"] == "api-key"
+
+
+def test_expired_grok_account_alone_is_not_a_token(monkeypatch, tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text(json.dumps({"acct": {"key": "cli-token-not-real", "expires_at": "2000-01-01T00:00:00+00:00"}}), encoding="utf-8")
+    monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(auth))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "0")
     assert resolve_token() is None
+    assert token_status()["source"] == "grok-cli-expired"
+
+
+def test_grok_account_skips_the_spending_limit(monkeypatch, tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text(json.dumps({"acct": {"key": "cli-token-not-real", "expires_at": "2099-01-01T00:00:00+00:00"}}), encoding="utf-8")
+    monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(auth))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("XAI_MANAGEMENT_KEY", raising=False)
+    monkeypatch.delenv("XAI_TEAM_ID", raising=False)
+    monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "0")
+
+    def boom(get_json=None):
+        raise AssertionError("spend gate")
+
+    monkeypatch.setattr("starlight_voice.x_voice.server_spend_gate", boom)
+    report = readiness()
+    assert report["token_source"] == "grok-cli"
+    assert report["spend_gate"] == "grok-account"
+    assert "xai-spend-limit" not in report["missing"]
+    assert "xai-key" not in report["missing"]
 
 
 def test_non_xai_env_key_is_ignored(monkeypatch) -> None:
