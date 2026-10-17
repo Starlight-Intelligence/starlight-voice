@@ -29,6 +29,7 @@ from starlight_voice.x_voice import (
     key_from_infisical,
     note_transcript,
     parse_arguments,
+    open_spend_gate,
     readiness,
     resolve_token,
     server_tool_hit,
@@ -120,8 +121,25 @@ def test_grok_account_skips_the_spending_limit(monkeypatch, tmp_path: Path) -> N
     report = readiness()
     assert report["token_source"] == "grok-cli"
     assert report["spend_gate"] == "grok-account"
+    assert open_spend_gate()["why"] == "grok-account"
     assert "xai-spend-limit" not in report["missing"]
     assert "xai-key" not in report["missing"]
+
+
+def test_an_xai_key_still_checks_the_spending_limit(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(tmp_path / "missing-auth.json"))
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-not-real")
+    monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "0")
+    monkeypatch.delenv("XAI_MANAGEMENT_KEY", raising=False)
+    monkeypatch.delenv("XAI_TEAM_ID", raising=False)
+
+    def seen(get_json=None):
+        return {"ok": False, "why": "xai-limit-unconfigured", "spoken": "shut"}
+
+    monkeypatch.setattr("starlight_voice.x_voice.server_spend_gate", seen)
+    gate = open_spend_gate()
+    assert gate["ok"] is False
+    assert gate["why"] == "xai-limit-unconfigured"
 
 
 def test_non_xai_env_key_is_ignored(monkeypatch) -> None:

@@ -433,10 +433,18 @@ def _module_present(name: str) -> bool:
     return True
 
 
+def open_spend_gate() -> dict[str, object]:
+    """The subscription session is not the metered key, so it skips the xAI limit."""
+
+    if token_status()["source"] == "grok-cli":
+        return {"ok": True, "why": "grok-account", "spoken": ""}
+    return server_spend_gate()
+
+
 def readiness() -> dict[str, object]:
     token = token_status()
     account = token["source"] == "grok-cli"
-    gate = {"ok": True, "why": "grok-account", "spoken": ""} if account else server_spend_gate()
+    gate = open_spend_gate()
     audio = _module_present("sounddevice")
     sockets = _module_present("websockets")
     script = dispatch_script().is_file()
@@ -632,7 +640,18 @@ def _text_item(text: str) -> dict[str, object]:
     }
 
 
-async def _finish_tools(ws, calls: list[dict]) -> None:
+_HOUSES = ("frankx", "arcanea", "gencreator", "starlight", "income")
+
+
+def named_house(text: str) -> str:
+    tokens = {word for word in "".join(ch.lower() if ch.isalnum() else " " for ch in text).split()}
+    for house in _HOUSES:
+        if house in tokens:
+            return house
+    return ""
+
+
+async def _finish_tools(ws, calls: list[dict], box: dict[str, str] | None = None) -> None:
     for event in calls:
         name = str(event.get("name") or "")
         call_id = str(event.get("call_id") or "")
@@ -644,6 +663,14 @@ async def _finish_tools(ws, calls: list[dict]) -> None:
             arguments = {}
         if name == "meta_harness":
             result = handle_meta_harness(arguments)
+            spoken = result.get("spoken")
+            _touch_live(
+                box,
+                primary=str(result.get("primary") or ""),
+                house=named_house(str(arguments.get("utterance") or "")),
+                started=False,
+                line=spoken if isinstance(spoken, str) else "",
+            )
         elif name == "estate_lookup":
             result = estate_lookup(str(arguments.get("query") or ""))
         else:
@@ -747,7 +774,7 @@ async def _pump(
         if kind == "response.done" and pending:
             calls = pending
             pending = []
-            await _finish_tools(ws, calls)
+            await _finish_tools(ws, calls, box)
             saw["tool"] = True
             saw["done"] = False
         elif kind == "response.done":
@@ -864,7 +891,7 @@ async def run_text(text: str) -> int:
     if not token:
         print("No xAI key. The socket stays closed.", flush=True)
         return 2
-    gate = server_spend_gate()
+    gate = open_spend_gate()
     if not gate["ok"]:
         print(gate["spoken"], flush=True)
         return 2
@@ -968,7 +995,7 @@ async def run_clap_loop() -> int:
             await ear.toggle.wait()
             ear.toggle.clear()
             ear.clear_play()
-            gate = server_spend_gate()
+            gate = open_spend_gate()
             if not gate["ok"]:
                 print(gate["spoken"], flush=True)
                 publish(
