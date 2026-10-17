@@ -9,10 +9,10 @@ from time import perf_counter
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "sidecar" / "src"))
 
-from starlight_voice import adapters  # noqa: E402
-from starlight_voice.browser import BrowserAutomationAdapter  # noqa: E402
-from starlight_voice.cognition import CognitionRouter  # noqa: E402
-from starlight_voice.config import Settings  # noqa: E402
+from starlight_voice import adapters
+from starlight_voice.browser import BrowserAutomationAdapter
+from starlight_voice.cognition import CognitionRouter
+from starlight_voice.config import Settings
 
 
 def measure_router(n: int) -> list[int]:

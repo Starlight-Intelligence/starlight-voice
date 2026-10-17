@@ -22,7 +22,6 @@ import subprocess
 import threading
 import time
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -41,7 +40,16 @@ from .session_store import (
     recall_for_open,
     safe_conversation_id,
 )
-from .spend import USD_PER_MINUTE, WEB_SEARCH_CAP, X_SEARCH_CAP, cap_label, open_budget, record_seconds
+from .spend import (
+    USD_PER_MINUTE,
+    WEB_SEARCH_CAP,
+    X_SEARCH_CAP,
+    cap_label,
+    open_budget,
+    reserve,
+    server_spend_gate,
+    settle,
+)
 
 MODEL = "grok-voice-latest"
 REALTIME_URL = f"wss://api.x.ai/v1/realtime?model={MODEL}"
@@ -57,6 +65,7 @@ INSTRUCTIONS = (
     "When he asks for code, review, dispatch, a repo, or estate work, "
     "call meta_harness before you answer. Say the seat by name. "
     "Say that you held it. started is always false. "
+    "There is no approval gate yet. Do not start a harness. "
     "Do not say the work has begun. Do not send, spend, merge, publish, or delete. "
     "Do not open another Queen. The meta harness is the seat lookup. "
     "For the desk, the operator, what was just said, or a search of this machine, call estate_lookup. "
@@ -76,18 +85,13 @@ _TOOL = {
     "name": "meta_harness",
     "description": (
         "Route one spoken work request through the Starlight meta harness. "
-        "Returns the seat. Does not start the seat."
+        "Returns the seat. Does not start the seat. There is no approval gate."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "utterance": {"type": "string", "description": "What Frank asked, verbatim."},
             "job": {"type": "string", "enum": list(JOBS)},
-            "data_class": {
-                "type": "string",
-                "enum": ["public", "secret", "money", "vault", "identity", "canon"],
-            },
-            "dirty": {"type": "boolean", "description": "True when the target tree has uncommitted work."},
         },
         "required": ["utterance", "job"],
     },
@@ -251,8 +255,7 @@ def handle_meta_harness(arguments: dict) -> dict[str, object]:
         return route_work(
             utterance=str(arguments.get("utterance") or ""),
             job=str(arguments.get("job") or "dispatch"),
-            data_class=str(arguments.get("data_class") or "public"),
-            dirty=bool(arguments.get("dirty") or False),
+            claimed_class=arguments.get("data_class"),
         )
     except Exception as exc:
         return {
@@ -261,39 +264,6 @@ def handle_meta_harness(arguments: dict) -> dict[str, object]:
             "spoken": "Meta harness did not answer. I did not start anything.",
             "error": type(exc).__name__,
         }
-
-
-def _grok_auth_path() -> Path:
-    override = os.environ.get("STARLIGHT_GROK_AUTH", "").strip()
-    return Path(override) if override else Path.home() / ".grok" / "auth.json"
-
-
-def token_from_grok_auth(path: Path, now: datetime | None = None) -> str | None:
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    record = None
-    if isinstance(data, dict):
-        for value in data.values():
-            if isinstance(value, dict) and value.get("key") and value.get("expires_at"):
-                record = value
-                break
-    if record is None:
-        return None
-    stamp = str(record["expires_at"]).replace("Z", "+00:00")
-    try:
-        expires = datetime.fromisoformat(stamp)
-    except ValueError:
-        return None
-    if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=UTC)
-    if expires <= (now or datetime.now(UTC)):
-        return None
-    token = str(record["key"]).strip()
-    return token or None
 
 
 def xai_shaped(value: str) -> bool:
@@ -365,25 +335,18 @@ def _infisical_stdout() -> str:
 
 
 def _env_api_key() -> str | None:
-    if os.environ.get("STARLIGHT_XVOICE_USE_API_KEY", "").strip() == "0":
-        return None
     value = os.environ.get("XAI_API_KEY", "").strip()
     return value if xai_shaped(value) else None
 
 
 def token_status() -> dict[str, object]:
-    """xAI-shaped key first. Grok CLI login is the fallback. OpenRouter is ignored."""
+    """Environment xai- key, then Infisical. No Grok CLI login. The value stays out."""
 
     load_local_env()
     if _env_api_key():
         return {"present": True, "source": "api-key"}
     if key_from_infisical():
         return {"present": True, "source": "infisical"}
-    path = _grok_auth_path()
-    if token_from_grok_auth(path):
-        return {"present": True, "source": "grok-cli"}
-    if path.is_file():
-        return {"present": False, "source": "grok-cli-expired"}
     return {"present": False, "source": "missing"}
 
 
@@ -392,10 +355,7 @@ def resolve_token() -> str | None:
     env_key = _env_api_key()
     if env_key:
         return env_key
-    pulled = key_from_infisical()
-    if pulled:
-        return pulled
-    return token_from_grok_auth(_grok_auth_path())
+    return key_from_infisical()
 
 
 def server_tools_enabled(source: str) -> bool:
@@ -431,14 +391,17 @@ def _module_present(name: str) -> bool:
 
 def readiness() -> dict[str, object]:
     token = token_status()
+    gate = server_spend_gate()
     audio = _module_present("sounddevice")
     sockets = _module_present("websockets")
     script = dispatch_script().is_file()
     clap_ok = clap_selfcheck()
-    ready = bool(token["present"] and audio and sockets and script and clap_ok)
+    ready = bool(token["present"] and gate["ok"] and audio and sockets and script and clap_ok)
     missing = []
     if not token["present"]:
-        missing.append("grok-cli")
+        missing.append("xai-key")
+    if not gate["ok"]:
+        missing.append("xai-spend-limit")
     if not audio:
         missing.append("sounddevice")
     if not sockets:
@@ -455,6 +418,7 @@ def readiness() -> dict[str, object]:
         "websockets": sockets,
         "dispatch_script": script,
         "clap_ok": clap_ok,
+        "spend_gate": gate["why"],
         "missing": missing,
         "voice": voice_name(),
         "reasoning": reasoning_effort(),
@@ -853,29 +817,40 @@ async def run_text(text: str) -> int:
     token = resolve_token()
     source = str(token_status()["source"])
     if not token:
-        print("No xAI key and no Grok CLI login. The socket stays closed.", flush=True)
+        print("No xAI key. The socket stays closed.", flush=True)
+        return 2
+    gate = server_spend_gate()
+    if not gate["ok"]:
+        print(gate["spoken"], flush=True)
         return 2
     budget = open_budget(session_cap=25)
     if not budget["ok"]:
         print(budget["spoken"], flush=True)
         return 2
-    ear = Ear()
-    try:
-        ear.start()
-    except Exception as exc:
-        print(f"speakers unavailable: {safe_error(exc)}", flush=True)
-        ear = None  # type: ignore[assignment]
-    if ear is not None:
-        print(f"mic: {ear.mic_name}", flush=True)
-    closed = asyncio.Event()
-
-    async def _stop_later() -> None:
-        await asyncio.sleep(25)
-        closed.set()
-
-    stopper = asyncio.create_task(_stop_later())
+    held = reserve(float(budget["max_s"]))
+    if not held["ok"]:
+        print(held["spoken"], flush=True)
+        return 2
+    ear: Ear | None = None
+    stopper: asyncio.Task | None = None
     started = time.monotonic()
+    saw: dict[str, bool] = {}
     try:
+        ear = Ear()
+        try:
+            ear.start()
+        except Exception as exc:
+            print(f"speakers unavailable: {safe_error(exc)}", flush=True)
+            ear = None
+        if ear is not None:
+            print(f"mic: {ear.mic_name}", flush=True)
+        closed = asyncio.Event()
+
+        async def _stop_later() -> None:
+            await asyncio.sleep(float(budget["max_s"]))
+            closed.set()
+
+        stopper = asyncio.create_task(_stop_later())
         saw = await _run_socket(
             token,
             ear,
@@ -888,9 +863,10 @@ async def run_text(text: str) -> int:
         print(f"voice socket failed: {safe_error(exc)}", flush=True)
         return 2
     finally:
-        label = record_seconds(time.monotonic() - started)
+        label = settle(str(held["id"]), time.monotonic() - started)
         print(f"cap {label}. Estimate ${USD_PER_MINUTE:.2f}/min. Search is extra.", flush=True)
-        stopper.cancel()
+        if stopper is not None:
+            stopper.cancel()
         if ear is not None:
             await asyncio.sleep(0.8)
             ear.stop()
@@ -902,7 +878,7 @@ async def run_text(text: str) -> int:
 async def run_clap_loop() -> int:
     report = readiness()
     if not report["token"]:
-        print("No xAI key and no Grok CLI login. The socket stays closed.", flush=True)
+        print("No xAI key. The socket stays closed.", flush=True)
         print(json.dumps(report, separators=(",", ":")), flush=True)
         return 2
     if not report["sounddevice"] or not report["websockets"]:
@@ -947,6 +923,20 @@ async def run_clap_loop() -> int:
             await ear.toggle.wait()
             ear.toggle.clear()
             ear.clear_play()
+            gate = server_spend_gate()
+            if not gate["ok"]:
+                print(gate["spoken"], flush=True)
+                publish(
+                    "armed",
+                    voice=voice_name(),
+                    reasoning=reasoning_effort(),
+                    mic=ear.mic_name,
+                    memory="idle",
+                    pid=os.getpid(),
+                    cap=cap_label(),
+                    key=str(token_status()["source"]),
+                )
+                continue
             budget = open_budget(session_cap=MAX_SESSION_S)
             if not budget["ok"]:
                 print(budget["spoken"], flush=True)
@@ -958,6 +948,20 @@ async def run_clap_loop() -> int:
                     memory="idle",
                     pid=os.getpid(),
                     cap=str(budget["label"]),
+                    key=str(token_status()["source"]),
+                )
+                continue
+            held = reserve(float(budget["max_s"]))
+            if not held["ok"]:
+                print(held["spoken"], flush=True)
+                publish(
+                    "armed",
+                    voice=voice_name(),
+                    reasoning=reasoning_effort(),
+                    mic=ear.mic_name,
+                    memory="idle",
+                    pid=os.getpid(),
+                    cap=str(held.get("label") or cap_label()),
                     key=str(token_status()["source"]),
                 )
                 continue
@@ -1046,7 +1050,7 @@ async def run_clap_loop() -> int:
                 print(f"voice socket failed: {safe_error(exc)}", flush=True)
                 print("armed", flush=True)
             finally:
-                label = record_seconds(time.monotonic() - started)
+                label = settle(str(held["id"]), time.monotonic() - started)
                 print(f"cap {label}. Estimate ${USD_PER_MINUTE:.2f}/min. Search is extra.", flush=True)
                 watcher.cancel()
                 idler.cancel()

@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -63,7 +63,7 @@ def _system_status() -> dict:
         from starlight_voice.status import system_status
 
         return system_status()
-    except Exception as e:  # noqa: BLE001 - console must render even if the sidecar is absent
+    except Exception:  # noqa: BLE001 - console must render even if the sidecar is absent
         return {
             "status": "STANDBY",
             "voice_loop": {"mode": "local-first", "first_audio_budget_ms": 606, "state": "standby"},
@@ -129,7 +129,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         record = {
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "recorded_at": datetime.now(UTC).isoformat(),
             "source": "starlight-voice-dashboard",
             "payload": payload,
         }

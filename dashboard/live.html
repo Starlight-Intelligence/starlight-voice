@@ -227,7 +227,7 @@
           text("conversation", live.conversation_id);
           text("mic", live.mic || "the listener owns it");
           text("cap", live.cap || "15 min a day");
-          text("key", live.key || "grok-cli");
+          text("key", live.key || "missing");
           text("reload", live.reload || document.getElementById("reload").textContent);
           const sessions = await fetch("/api/sessions").then((response) => response.json());
           const list = document.getElementById("sessions");

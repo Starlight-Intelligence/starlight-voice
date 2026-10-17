@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
+
+from .config import repo_root
 
 JOBS = (
     "dispatch",
@@ -61,25 +64,88 @@ def normalize_job(job: str) -> tuple[str, bool]:
     return "dispatch", True
 
 
-def normalize_class(data_class: str) -> str:
+_MARKERS = (
+    ("money", re.compile(r"\b(invoice|payment|stripe|billing|bank|wallet|price|spend|payroll)\b", re.I)),
+    ("secret", re.compile(r"\b(secret|api[-_ ]?key|password|credential|token|private key)\b", re.I)),
+    ("vault", re.compile(r"\b(vault|infisical)\b", re.I)),
+    ("identity", re.compile(r"\b(passport|identity|ssn)\b", re.I)),
+    ("canon", re.compile(r"\b(canon|private[- ]canon|lore)\b", re.I)),
+)
+_PUBLIC = re.compile(r"\bpublic\b", re.I)
+
+
+def normalize_class(data_class: str | None) -> str | None:
+    """Known class, or None. Unknown is not public."""
+
+    if data_class is None:
+        return None
     raw = data_class.strip().lower().replace("_", "-")
-    if raw in {"", "public", "none"}:
-        return "public"
     if raw == "private-canon":
         return "canon"
-    return raw if raw in _CLASSES else "public"
+    if raw in _CLASSES:
+        return raw
+    return None
+
+
+def ground_class(utterance: str) -> str | None:
+    """Class from the utterance alone. No match is unknown, not public."""
+
+    hits = [name for name, pattern in _MARKERS if pattern.search(utterance)]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        return None
+    if _PUBLIC.search(utterance):
+        return "public"
+    return None
+
+
+def resolve_class(utterance: str, claimed: object = None) -> str | None:
+    """Ground the class. A claim may only raise a public ground, never lower one."""
+
+    grounded = ground_class(utterance)
+    raw = "" if claimed is None else str(claimed).strip()
+    if not raw:
+        return grounded
+    known = normalize_class(raw)
+    if known is None or grounded is None:
+        return None
+    if known == grounded or known == "public":
+        return grounded
+    if grounded == "public":
+        return known
+    return None
+
+
+def ground_dirty(root: Path | None = None) -> bool:
+    """True when git status is non-empty, or when git cannot be read."""
+
+    target = root or repo_root()
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(target), "status", "--porcelain=v1"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    if proc.returncode != 0:
+        return True
+    return bool(proc.stdout.strip())
 
 
 def route_work(
     *,
     utterance: str,
     job: str,
-    data_class: str = "public",
-    dirty: bool = False,
+    claimed_class: object = None,
+    dirty_probe=None,
     runner=None,
     script: Path | None = None,
 ) -> dict[str, object]:
-    """Return the seat for this utterance. ``started`` is always false."""
+    """Emit one dispatch packet. ``started`` is always false. No approval gate."""
 
     text = " ".join(utterance.split())
     if not text:
@@ -91,10 +157,18 @@ def route_work(
             "primary": "",
             "refuse": True,
             "reasons": ["empty-utterance"],
+            "packet": False,
         }
 
     resolved_job, job_coerced = normalize_job(job)
-    resolved_class = normalize_class(data_class)
+    resolved_class = resolve_class(text, claimed_class)
+    if dirty_probe is None:
+        is_dirty = ground_dirty()
+    else:
+        try:
+            is_dirty = bool(dirty_probe())
+        except (OSError, RuntimeError, TypeError, ValueError):
+            is_dirty = True
     target = script or dispatch_script()
     argv = [
         "node",
@@ -102,51 +176,73 @@ def route_work(
         "--job",
         resolved_job,
         "--dirty",
-        "yes" if dirty else "no",
+        "yes" if is_dirty else "no",
         "--laptop-off",
         "no",
         "--json",
     ]
-    if resolved_class != "public":
+    # Unknown is not sent as public. The table has no unknown class, so the
+    # packet goes out without --class and the result below refuses it.
+    if resolved_class not in {None, "public"}:
         argv.extend(["--class", resolved_class])
 
+    decision: dict | None
     try:
         raw = (runner or _node)(argv)
-        decision = json.loads(raw)
+        parsed = json.loads(raw)
+        decision = parsed if isinstance(parsed, dict) else None
+        packet_error = None if decision is not None else "bad-decision"
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError, RuntimeError) as exc:
+        decision = None
+        packet_error = type(exc).__name__
+
+    if decision is None:
+        reasons = ["unknown-data-class"] if resolved_class is None else []
+        reasons.append(packet_error or "bad-decision")
+        spoken = (
+            "Held. The data class is unknown, so I did not start anything."
+            if resolved_class is None
+            else "Meta harness did not answer. I did not start anything."
+        )
         return {
             "ok": False,
             "started": False,
-            "spoken": "Meta harness did not answer. I did not start anything.",
+            "spoken": spoken,
             "job": resolved_job,
             "primary": "",
             "refuse": True,
-            "reasons": [type(exc).__name__],
+            "reasons": reasons,
             "utterance": text,
+            "data_class": resolved_class or "unknown",
+            "packet": True,
         }
 
-    if not isinstance(decision, dict):
+    reasons = [str(item) for item in decision.get("reasons") or []]
+    if job_coerced:
+        reasons = ["job-coerced-to-dispatch", *reasons]
+    would_spawn = bool(decision.get("spawn"))
+    if resolved_class is None:
         return {
             "ok": False,
             "started": False,
-            "spoken": "Meta harness returned an unreadable decision.",
-            "job": resolved_job,
+            "spoken": "Held. The data class is unknown, so I did not start anything.",
+            "job": str(decision.get("job") or resolved_job),
             "primary": "",
             "refuse": True,
-            "reasons": ["bad-decision"],
+            "reasons": ["unknown-data-class", *reasons],
+            "next": "",
+            "data_class": "unknown",
             "utterance": text,
+            "table_would_spawn": would_spawn,
+            "packet": True,
         }
 
     primary = str(decision.get("primary") or "")
     refuse = bool(decision.get("refuse"))
-    reasons = [str(item) for item in decision.get("reasons") or []]
-    if job_coerced:
-        reasons = ["job-coerced-to-dispatch", *reasons]
-    spoken = _spoken(resolved_job, primary, refuse, reasons)
     return {
         "ok": not refuse and bool(primary),
         "started": False,
-        "spoken": spoken,
+        "spoken": _spoken(resolved_job, primary, refuse, reasons),
         "job": str(decision.get("job") or resolved_job),
         "primary": primary,
         "refuse": refuse,
@@ -154,7 +250,8 @@ def route_work(
         "next": str(decision.get("next") or ""),
         "data_class": resolved_class,
         "utterance": text,
-        "table_would_spawn": bool(decision.get("spawn")),
+        "table_would_spawn": would_spawn,
+        "packet": True,
     }
 
 
