@@ -67,13 +67,25 @@ def test_session_update_pins_grok_voice_and_the_harness_tool(monkeypatch) -> Non
     assert "dirty" not in meta["parameters"]["properties"]
 
 
-def test_env_xai_key_beats_a_grok_cli_file(monkeypatch, tmp_path: Path) -> None:
+def test_token_order_is_env_then_infisical_and_cli_login_is_ignored(monkeypatch, tmp_path: Path) -> None:
     auth = tmp_path / "auth.json"
     auth.write_text(json.dumps({"acct": {"key": "cli-token-not-real", "expires_at": "2099-01-01T00:00:00+00:00"}}), encoding="utf-8")
     monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(auth))
     monkeypatch.setenv("STARLIGHT_XVOICE_USE_API_KEY", "0")
+    monkeypatch.setenv("STARLIGHT_XVOICE_GROK_CLI", "1")
     monkeypatch.setenv("XAI_API_KEY", "xai-test-not-real")
     assert resolve_token() == "xai-test-not-real"
+
+
+def test_grok_cli_login_alone_is_not_a_token(monkeypatch, tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text(json.dumps({"acct": {"key": "cli-token-not-real", "expires_at": "2099-01-01T00:00:00+00:00"}}), encoding="utf-8")
+    monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(auth))
+    monkeypatch.setenv("STARLIGHT_XVOICE_USE_API_KEY", "0")
+    monkeypatch.setenv("STARLIGHT_XVOICE_GROK_CLI", "1")
+    monkeypatch.setenv("XAI_API_KEY", "")
+    monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "0")
+    assert resolve_token() is None
 
 
 def test_non_xai_env_key_is_ignored(monkeypatch) -> None:
@@ -369,6 +381,30 @@ def test_unknown_claim_does_not_become_public() -> None:
     assert out["data_class"] == "unknown"
     assert out["refuse"] is True
     assert out["started"] is False
+
+
+def test_model_claim_cannot_raise_a_public_ground() -> None:
+    seen: list[str] = []
+
+    def runner(argv: list[str]) -> str:
+        seen.extend(argv)
+        return _decision()
+
+    out = route_work(
+        utterance="review the public page",
+        job="review",
+        claimed_class="secret",
+        runner=runner,
+        dirty_probe=lambda: False,
+    )
+    assert seen
+    assert "--class" not in seen
+    assert out["data_class"] == "unknown"
+    assert out["refuse"] is True
+    assert out["started"] is False
+    assert out["packet"] is True
+    assert out["primary"] == ""
+    assert "command" not in out
 
 
 def test_restricted_marker_beats_a_public_claim() -> None:

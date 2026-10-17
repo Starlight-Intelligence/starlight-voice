@@ -101,7 +101,7 @@ def ground_class(utterance: str) -> str | None:
 
 
 def resolve_class(utterance: str, claimed: object = None) -> str | None:
-    """Ground the class. A claim may only raise a public ground, never lower one."""
+    """Class from the utterance only. A claim cannot set or raise it."""
 
     grounded = ground_class(utterance)
     raw = "" if claimed is None else str(claimed).strip()
@@ -112,8 +112,6 @@ def resolve_class(utterance: str, claimed: object = None) -> str | None:
         return None
     if known == grounded or known == "public":
         return grounded
-    if grounded == "public":
-        return known
     return None
 
 
