@@ -34,6 +34,7 @@ from .session_store import (
     append_event,
     estate_lookup,
     last_conversation_id,
+    merge_live,
     new_session_id,
     note_conversation_id,
     prior_talk,
@@ -644,11 +645,25 @@ _HOUSES = ("frankx", "arcanea", "gencreator", "starlight", "income")
 
 
 def named_house(text: str) -> str:
+    """One house token lights that house. Zero or several stay dark."""
+
     tokens = {word for word in "".join(ch.lower() if ch.isalnum() else " " for ch in text).split()}
-    for house in _HOUSES:
-        if house in tokens:
-            return house
+    found = [house for house in _HOUSES if house in tokens]
+    if len(found) == 1:
+        return found[0]
     return ""
+
+
+def face_fields(arguments: dict, result: dict) -> dict[str, object]:
+    """Fields published after meta-harness. ``started`` stays false. Nothing is spawned here."""
+
+    spoken = result.get("spoken")
+    return {
+        "primary": str(result.get("primary") or ""),
+        "house": named_house(str(arguments.get("utterance") or "")),
+        "started": False,
+        "line": spoken if isinstance(spoken, str) else "",
+    }
 
 
 async def _finish_tools(ws, calls: list[dict], box: dict[str, str] | None = None) -> None:
@@ -663,14 +678,7 @@ async def _finish_tools(ws, calls: list[dict], box: dict[str, str] | None = None
             arguments = {}
         if name == "meta_harness":
             result = handle_meta_harness(arguments)
-            spoken = result.get("spoken")
-            _touch_live(
-                box,
-                primary=str(result.get("primary") or ""),
-                house=named_house(str(arguments.get("utterance") or "")),
-                started=False,
-                line=spoken if isinstance(spoken, str) else "",
-            )
+            _touch_live(box, **face_fields(arguments, result))
         elif name == "estate_lookup":
             result = estate_lookup(str(arguments.get("query") or ""))
         else:
@@ -685,7 +693,9 @@ async def _finish_tools(ws, calls: list[dict], box: dict[str, str] | None = None
 def _touch_live(box: dict[str, str] | None, **fields: object) -> None:
     if not box:
         return
-    publish(str(box.get("phase") or "open"), session_id=box.get("session_id", ""), **fields)
+    payload = dict(fields)
+    payload.setdefault("session_id", box.get("session_id", ""))
+    merge_live(str(box.get("phase") or "open"), **payload)
 
 
 async def _pump(

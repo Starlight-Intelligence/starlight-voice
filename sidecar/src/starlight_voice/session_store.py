@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .config import repo_root
 
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 _ID = re.compile(r"^[A-Za-z0-9_.:-]{6,128}$")
 
 
@@ -71,6 +71,47 @@ def publish(phase: str, **fields: object) -> dict[str, object]:
     return record
 
 
+_KEPT_ON_TOUCH = (
+    "pid",
+    "voice",
+    "reasoning",
+    "mic",
+    "memory",
+    "cap",
+    "key",
+    "house",
+    "started",
+    "primary",
+    "line",
+    "conversation_id",
+    "session_id",
+)
+
+
+def merge_live(phase: str, **fields: object) -> dict[str, object]:
+    """Publish a phase and keep face fields the page still polls."""
+
+    try:
+        with _LOCK:
+            try:
+                current = json.loads(live_path().read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                current = {}
+            if not isinstance(current, dict):
+                current = {}
+            outgoing = dict(fields)
+            if current.get("started") is False:
+                outgoing["started"] = False
+            carried = {
+                key: current[key]
+                for key in _KEPT_ON_TOUCH
+                if key in current and key not in outgoing
+            }
+            return publish(phase, **carried, **outgoing)
+    except OSError:
+        return {"phase": phase, **fields}
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -98,7 +139,7 @@ def read_live() -> dict[str, object]:
     if not isinstance(value, dict):
         return {"phase": "stopped", "memory": "unavailable"}
     phase = str(value.get("phase") or "")
-    if phase in {"armed", "open", "speaking"}:
+    if phase in {"armed", "open", "speaking"} and "pid" in value:
         try:
             pid = int(value.get("pid") or 0)
         except (TypeError, ValueError):
