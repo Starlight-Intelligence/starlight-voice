@@ -1,4 +1,5 @@
 import json
+import os
 
 from starlight_voice.session_store import (
     append_event,
@@ -15,7 +16,7 @@ from starlight_voice.x_voice import realtime_url, session_update
 
 def test_live_roundtrip(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("STARLIGHT_VOICE_STATE_DIR", str(tmp_path))
-    publish("armed", voice="ara", memory="idle", pid=1)
+    publish("armed", voice="ara", memory="idle", pid=os.getpid())
     assert read_live()["phase"] == "armed"
     append_event("open", session_id="abc", conversation_id="conv_123456")
     append_event("transcript", session_id="abc", line="you: hello")
@@ -53,6 +54,15 @@ def test_estate_lookup_reads_the_desk_and_does_not_start(monkeypatch, tmp_path) 
     missing = estate_lookup("zzzz-not-on-the-desk")
     assert missing["ok"] is False
     assert missing["started"] is False
+
+
+def test_a_dead_listener_reads_as_stopped(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("STARLIGHT_VOICE_STATE_DIR", str(tmp_path))
+    publish("armed", voice="ara", memory="idle", pid=2_147_483_646, key="grok-cli")
+    live = read_live()
+    assert live["phase"] == "stopped"
+    assert live["memory"] == "idle"
+    assert live["key"] == "grok-cli"
 
 
 def test_missing_store_reads_as_stopped(monkeypatch, tmp_path) -> None:

@@ -71,12 +71,43 @@ def publish(phase: str, **fields: object) -> dict[str, object]:
     return record
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        kernel.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def read_live() -> dict[str, object]:
     try:
         value = json.loads(live_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {"phase": "stopped", "memory": "unavailable"}
-    return value if isinstance(value, dict) else {"phase": "stopped", "memory": "unavailable"}
+    if not isinstance(value, dict):
+        return {"phase": "stopped", "memory": "unavailable"}
+    phase = str(value.get("phase") or "")
+    if phase in {"armed", "open", "speaking"}:
+        try:
+            pid = int(value.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if not _pid_alive(pid):
+            value = dict(value)
+            value["phase"] = "stopped"
+            value["memory"] = "idle"
+    return value
 
 
 def append_event(kind: str, **fields: object) -> None:
