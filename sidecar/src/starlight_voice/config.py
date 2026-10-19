@@ -1,10 +1,45 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 ENV_FILES = (".env.local", ".env")
+INFISICAL_DOMAIN = "https://eu.infisical.com"
+INFISICAL_ORG = "a40109f1-3b54-477e-a7f9-805dd8abe602"
+INFISICAL_PROJECT = "5578966b-0c74-4253-9a3c-bace21d97b24"
+
+
+def infisical_enabled() -> bool:
+    return os.environ.get("STARLIGHT_XVOICE_INFISICAL", "1").strip() != "0"
+
+
+def infisical_secret(name: str) -> str:
+    """One secret from the EU Infisical project, or "" when it cannot be read."""
+
+    env_name = os.environ.get("STARLIGHT_XVOICE_INFISICAL_ENV", "dev").strip() or "dev"
+    try:
+        done = subprocess.run(
+            [
+                "infisical", "secrets", "get", name,
+                "--plain", "--silent",
+                "--domain", INFISICAL_DOMAIN,
+                "--org", INFISICAL_ORG,
+                "--projectId", INFISICAL_PROJECT,
+                "--env", env_name,
+                "--log-level", "error",
+                "--telemetry=false",
+            ],
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if done.returncode != 0:
+        return ""
+    return done.stdout.decode("utf-8", errors="replace").strip()
 
 
 def repo_root() -> Path:

@@ -50,7 +50,9 @@ Plan on $0.08 a minute while the socket is open. Vendor docs have also printed $
 
 An OpenRouter key can call Grok for text and for one-way speech. It does not open this realtime socket. `listen --check` will not become ready from that key. No flag changes that.
 
-The grok CLI session skips the spending-limit check and does not turn on server search. An `xai-` key stays closed until `XAI_MANAGEMENT_KEY` and `XAI_TEAM_ID` can read a limit that still has room. Never commit either credential. Stop the listener when you are done.
+The grok CLI session skips the spending-limit check and does not turn on server search. An `xai-` key stays closed until `XAI_MANAGEMENT_KEY` and `XAI_TEAM_ID` can read a limit that still has room. Both are read from the environment first, then from Infisical. Never commit either credential. Stop the listener when you are done.
+
+When the Grok plan is spent but its sign-in is still valid, set `STARLIGHT_XVOICE_TOKEN=api` in `.env.local`. Ara then skips the account and uses the metered `xai-` key, with search on and the spending limit enforced.
 
 After the page is up, `GET http://127.0.0.1:8765/api/live` returns JSON with `phase` and `updated`. The body must not contain a key. `GET http://127.0.0.1:8765/healthz` means the page process is up. It does not mean the ear is listening.
 

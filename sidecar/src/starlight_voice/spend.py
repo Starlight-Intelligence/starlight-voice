@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from .config import load_local_env
+from .config import infisical_enabled, infisical_secret, load_local_env
 from .session_store import state_dir
 
 USD_PER_MINUTE = 0.08
@@ -343,15 +343,38 @@ def _gate_shut(why: str, spoken: str) -> dict[str, object]:
     return {"ok": False, "why": why, "spoken": spoken}
 
 
-def server_spend_gate(get_json=None) -> dict[str, object]:
-    """Refuse to open unless xAI reports a spending limit that still has room.
+_vault: dict[str, str] = {}
 
-    ``get_json(path) -> dict`` is the test seam. It must not receive the key.
-    """
+
+def _management_creds(secret=None) -> tuple[str, str]:
+    """Env first, then Infisical. Pulled values stay in this module, never in os.environ,
+    so child processes such as the dispatch script never inherit the management key."""
 
     load_local_env()
-    key = os.environ.get("XAI_MANAGEMENT_KEY", "").strip()
-    team = os.environ.get("XAI_TEAM_ID", "").strip()
+    found = {name: os.environ.get(name, "").strip() for name in ("XAI_MANAGEMENT_KEY", "XAI_TEAM_ID")}
+    if all(found.values()) or not infisical_enabled():
+        return found["XAI_MANAGEMENT_KEY"], found["XAI_TEAM_ID"]
+    pull = secret or infisical_secret
+    for name, value in found.items():
+        if value:
+            continue
+        if secret is None and name in _vault:
+            found[name] = _vault[name]
+            continue
+        found[name] = (pull(name) or "").strip()
+        if secret is None and found[name]:
+            _vault[name] = found[name]
+    return found["XAI_MANAGEMENT_KEY"], found["XAI_TEAM_ID"]
+
+
+def server_spend_gate(get_json=None, secret=None) -> dict[str, object]:
+    """Refuse to open unless xAI reports a spending limit that still has room.
+
+    ``get_json(path) -> dict`` and ``secret(name) -> str`` are test seams.
+    ``get_json`` must not receive the key.
+    """
+
+    key, team = _management_creds(secret)
     if not key or not team:
         return _gate_shut(
             "xai-limit-unconfigured",

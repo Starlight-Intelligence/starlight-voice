@@ -142,6 +142,32 @@ def test_an_xai_key_still_checks_the_spending_limit(monkeypatch, tmp_path: Path)
     assert gate["why"] == "xai-limit-unconfigured"
 
 
+def test_api_preference_skips_a_live_grok_account(monkeypatch, tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text(json.dumps({"acct": {"key": "cli-token-not-real", "expires_at": "2099-01-01T00:00:00+00:00"}}), encoding="utf-8")
+    monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(auth))
+    monkeypatch.setenv("STARLIGHT_XVOICE_TOKEN", "api")
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-not-real")
+    assert resolve_token() == "xai-test-not-real"
+    assert token_status()["source"] == "api-key"
+
+    def seen(get_json=None):
+        return {"ok": False, "why": "xai-limit-unconfigured", "spoken": "shut"}
+
+    monkeypatch.setattr("starlight_voice.x_voice.server_spend_gate", seen)
+    assert open_spend_gate()["why"] == "xai-limit-unconfigured"
+
+
+def test_api_preference_without_a_key_is_missing(monkeypatch, tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text(json.dumps({"acct": {"key": "cli-token-not-real", "expires_at": "2099-01-01T00:00:00+00:00"}}), encoding="utf-8")
+    monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(auth))
+    monkeypatch.setenv("STARLIGHT_XVOICE_TOKEN", "api")
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    assert resolve_token() is None
+    assert token_status() == {"present": False, "source": "missing"}
+
+
 def test_non_xai_env_key_is_ignored(monkeypatch) -> None:
     monkeypatch.setenv("XAI_API_KEY", "openrouter-key-not-for-this-socket")
     assert resolve_token() is None
@@ -316,6 +342,41 @@ def test_server_limit_refuses_when_unread_or_spent(monkeypatch) -> None:
         return {"coreInvoice": {}}
 
     assert server_spend_gate(prepaid_empty)["ok"] is False
+
+
+def test_spend_gate_reads_management_creds_from_infisical(monkeypatch) -> None:
+    monkeypatch.setenv("XAI_MANAGEMENT_KEY", "")
+    monkeypatch.setenv("XAI_TEAM_ID", "")
+    monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "1")
+    vault = {"XAI_MANAGEMENT_KEY": "mgmt-vault-not-real", "XAI_TEAM_ID": "team-vault"}
+    asked: list[str] = []
+
+    def secret(name: str) -> str:
+        asked.append(name)
+        return vault[name]
+
+    def room(path: str) -> dict:
+        assert "mgmt-vault-not-real" not in path
+        assert path.startswith("/v1/billing/teams/team-vault/")
+        if path.endswith("/spending-limits"):
+            return {"spendingLimits": {"effectiveSl": {"val": "4000"}}}
+        return {"coreInvoice": {"amountBeforeVat": "10"}}
+
+    assert server_spend_gate(room, secret=secret)["ok"] is True
+    assert sorted(asked) == ["XAI_MANAGEMENT_KEY", "XAI_TEAM_ID"]
+    assert os.environ["XAI_MANAGEMENT_KEY"] == ""
+
+
+def test_spend_gate_stays_shut_when_infisical_is_off_or_empty(monkeypatch) -> None:
+    monkeypatch.setenv("XAI_MANAGEMENT_KEY", "")
+    monkeypatch.setenv("XAI_TEAM_ID", "")
+
+    def never(name: str) -> str:
+        raise AssertionError("infisical is off")
+
+    assert server_spend_gate(secret=never)["why"] == "xai-limit-unconfigured"
+    monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "1")
+    assert server_spend_gate(secret=lambda name: "")["why"] == "xai-limit-unconfigured"
 
 
 def test_management_get_uses_the_documented_host(monkeypatch) -> None:

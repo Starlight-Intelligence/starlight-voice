@@ -29,7 +29,7 @@ from urllib.parse import quote
 from . import approval
 from .audio_contract import float32_to_pcm16le
 from .clap import ClapDetector
-from .config import load_local_env, repo_root
+from .config import infisical_enabled, infisical_secret, load_local_env, repo_root
 from .meta_harness import JOBS, dispatch_script, route_work
 from .session_store import (
     append_event,
@@ -308,7 +308,13 @@ def xai_shaped(value: str) -> bool:
 
 
 def _infisical_enabled() -> bool:
-    return os.environ.get("STARLIGHT_XVOICE_INFISICAL", "1").strip() != "0"
+    return infisical_enabled()
+
+
+def _api_preferred() -> bool:
+    """STARLIGHT_XVOICE_TOKEN=api skips a signed-in Grok account whose plan is spent."""
+
+    return os.environ.get("STARLIGHT_XVOICE_TOKEN", "").strip().lower() == "api"
 
 
 _pulled: str | None = None
@@ -340,34 +346,7 @@ def key_from_infisical(runner=None) -> str | None:
 
 
 def _infisical_stdout() -> str:
-    env_name = os.environ.get("STARLIGHT_XVOICE_INFISICAL_ENV", "dev").strip() or "dev"
-    done = subprocess.run(
-        [
-            "infisical",
-            "secrets",
-            "get",
-            "XAI_API_KEY",
-            "--plain",
-            "--silent",
-            "--domain",
-            "https://eu.infisical.com",
-            "--org",
-            "a40109f1-3b54-477e-a7f9-805dd8abe602",
-            "--projectId",
-            "5578966b-0c74-4253-9a3c-bace21d97b24",
-            "--env",
-            env_name,
-            "--log-level",
-            "error",
-            "--telemetry=false",
-        ],
-        capture_output=True,
-        timeout=20,
-        check=False,
-    )
-    if done.returncode != 0:
-        return ""
-    return done.stdout.decode("utf-8", errors="replace")
+    return infisical_secret("XAI_API_KEY")
 
 
 def _env_api_key() -> str | None:
@@ -414,21 +393,22 @@ def token_status() -> dict[str, object]:
     """Grok account first, then an xai- key, then Infisical. The value stays out."""
 
     load_local_env()
+    api_only = _api_preferred()
     path = _grok_auth_path()
-    if token_from_grok_auth(path):
+    if not api_only and token_from_grok_auth(path):
         return {"present": True, "source": "grok-cli"}
     if _env_api_key():
         return {"present": True, "source": "api-key"}
     if key_from_infisical():
         return {"present": True, "source": "infisical"}
-    if path.is_file():
+    if not api_only and path.is_file():
         return {"present": False, "source": "grok-cli-expired"}
     return {"present": False, "source": "missing"}
 
 
 def resolve_token() -> str | None:
     load_local_env()
-    account = token_from_grok_auth(_grok_auth_path())
+    account = None if _api_preferred() else token_from_grok_auth(_grok_auth_path())
     if account:
         return account
     env_key = _env_api_key()
