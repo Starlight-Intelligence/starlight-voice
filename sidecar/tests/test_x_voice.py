@@ -367,6 +367,20 @@ def test_spend_gate_reads_management_creds_from_infisical(monkeypatch) -> None:
     assert os.environ["XAI_MANAGEMENT_KEY"] == ""
 
 
+def test_spend_gate_accepts_the_management_api_key_spelling(monkeypatch) -> None:
+    monkeypatch.setenv("XAI_MANAGEMENT_KEY", "")
+    monkeypatch.setenv("XAI_TEAM_ID", "")
+    monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "1")
+    vault = {"XAI_MANAGEMENT_API_KEY": "mgmt-vault-not-real", "XAI_TEAM_ID": "team-vault"}
+
+    def room(path: str) -> dict:
+        if path.endswith("/spending-limits"):
+            return {"spendingLimits": {"effectiveSl": {"val": "4000"}}}
+        return {"coreInvoice": {"amountBeforeVat": "10"}}
+
+    assert server_spend_gate(room, secret=lambda name: vault.get(name, ""))["ok"] is True
+
+
 def test_spend_gate_stays_shut_when_infisical_is_off_or_empty(monkeypatch) -> None:
     monkeypatch.setenv("XAI_MANAGEMENT_KEY", "")
     monkeypatch.setenv("XAI_TEAM_ID", "")

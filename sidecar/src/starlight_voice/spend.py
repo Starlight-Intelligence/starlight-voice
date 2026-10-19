@@ -344,6 +344,17 @@ def _gate_shut(why: str, spoken: str) -> dict[str, object]:
 
 
 _vault: dict[str, str] = {}
+# xAI's console labels it a "management API key", so both spellings occur in vaults.
+MANAGEMENT_KEY_NAMES = ("XAI_MANAGEMENT_KEY", "XAI_MANAGEMENT_API_KEY")
+TEAM_ID_NAMES = ("XAI_TEAM_ID",)
+
+
+def _first(names: tuple[str, ...], read) -> str:
+    for name in names:
+        value = (read(name) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _management_creds(secret=None) -> tuple[str, str]:
@@ -351,20 +362,20 @@ def _management_creds(secret=None) -> tuple[str, str]:
     so child processes such as the dispatch script never inherit the management key."""
 
     load_local_env()
-    found = {name: os.environ.get(name, "").strip() for name in ("XAI_MANAGEMENT_KEY", "XAI_TEAM_ID")}
-    if all(found.values()) or not infisical_enabled():
-        return found["XAI_MANAGEMENT_KEY"], found["XAI_TEAM_ID"]
+    key = _first(MANAGEMENT_KEY_NAMES, os.environ.get)
+    team = _first(TEAM_ID_NAMES, os.environ.get)
+    if (key and team) or not infisical_enabled():
+        return key, team
     pull = secret or infisical_secret
-    for name, value in found.items():
-        if value:
-            continue
-        if secret is None and name in _vault:
-            found[name] = _vault[name]
-            continue
-        found[name] = (pull(name) or "").strip()
-        if secret is None and found[name]:
-            _vault[name] = found[name]
-    return found["XAI_MANAGEMENT_KEY"], found["XAI_TEAM_ID"]
+
+    def remembered(name: str) -> str:
+        if secret is not None:
+            return pull(name) or ""
+        if name not in _vault:
+            _vault[name] = (pull(name) or "").strip()
+        return _vault[name]
+
+    return key or _first(MANAGEMENT_KEY_NAMES, remembered), team or _first(TEAM_ID_NAMES, remembered)
 
 
 def server_spend_gate(get_json=None, secret=None) -> dict[str, object]:
