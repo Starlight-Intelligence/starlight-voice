@@ -74,7 +74,9 @@ def test_oversized_post_is_rejected(live_server) -> None:
 def test_valid_rating_writes_ok(live_server, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(dash, "RATINGS", tmp_path / "r.jsonl")  # don't touch real ratings
     data = json.dumps({"option": "hybrid", "rating": 9}).encode("utf-8")
-    req = urllib.request.Request(live_server + "/ratings", data=data, method="POST")
+    req = urllib.request.Request(
+        live_server + "/ratings", data=data, method="POST", headers={"content-type": "application/json"}
+    )
     resp = urllib.request.urlopen(req, timeout=5)
     assert json.loads(resp.read())["ok"] is True
     assert (tmp_path / "r.jsonl").exists()
@@ -138,3 +140,57 @@ def test_disallowed_get_is_fail_closed_404(live_server, bad) -> None:
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(live_server + bad, timeout=5)
     assert exc.value.code == 404
+
+
+def _post(base: str, path: str, body: dict, headers: dict[str, str] | None = None):
+    req = urllib.request.Request(
+        base + path,
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={"content-type": "application/json", **(headers or {})},
+    )
+    return urllib.request.urlopen(req, timeout=5)
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Origin": "https://evil.example"},
+        {"Origin": "null"},
+        {"content-type": "text/plain"},
+        {"Host": "attacker.example:8765"},
+    ],
+)
+def test_cross_site_post_is_refused(live_server, headers) -> None:
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(live_server, "/api/approve", {}, headers)
+    assert exc.value.code == 403
+
+
+def test_same_origin_approve_acks_the_waiting_proposal(live_server, monkeypatch, tmp_path) -> None:
+    from starlight_voice import approval
+
+    repos = tmp_path / "repos"
+    (repos / "frankx-site" / ".git").mkdir(parents=True)
+    monkeypatch.setenv("STARLIGHT_REPOS_ROOT", str(repos))
+    monkeypatch.setenv("STARLIGHT_QUEEN_DIR", str(tmp_path / "queen"))
+    monkeypatch.setenv("STARLIGHT_VOICE_PENDING_DIR", str(tmp_path / "pending"))
+    allow = tmp_path / "repos.allow"
+    allow.write_text("frankx-site\n", encoding="utf-8")
+    monkeypatch.setenv("STARLIGHT_VOICE_REPO_ALLOWLIST", str(allow))
+    packet = {"ok": True, "job": "implement", "primary": "codex-cloud", "refuse": False,
+              "data_class": "public", "utterance": "public tidy frankx site"}
+    proposal = approval.propose(packet)["proposal"]
+    approval.confirm_spoken(proposal)
+    pending = json.loads(urllib.request.urlopen(live_server + "/api/pending", timeout=5).read())["pending"]
+    assert pending[0]["request"] == "public tidy frankx site"
+    resp = _post(live_server, "/api/approve", {"code": pending[0]["code"]}, {"Origin": live_server})
+    assert json.loads(resp.read())["queued"] is True
+    assert len(list((tmp_path / "queen" / "inbox").glob("*.json"))) == 1
+
+
+def test_approve_without_a_code_is_a_conflict(live_server, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("STARLIGHT_VOICE_PENDING_DIR", str(tmp_path / "pending"))
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _post(live_server, "/api/approve", {})
+    assert exc.value.code == 409

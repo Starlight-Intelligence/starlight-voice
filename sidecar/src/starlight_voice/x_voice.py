@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
+from . import approval
 from .audio_contract import float32_to_pcm16le
 from .clap import ClapDetector
 from .config import load_local_env, repo_root
@@ -66,8 +67,11 @@ INSTRUCTIONS = (
     "Two sentences unless he asks you to continue. Lead with the answer. "
     "When he asks for code, review, dispatch, a repo, or estate work, "
     "call meta_harness before you answer. Say the seat by name. "
-    "Say that you held it. started is always false. "
-    "There is no approval gate yet. Do not start a harness. "
+    "started is always false: you never start a harness, the Queen does. "
+    "When meta_harness returns a proposal, read back its line and wait. "
+    "Only after Frank clearly says go for that proposal, call confirm_handoff with it. "
+    "His spoken go is half the gate; he must also press approve, so never say the work is queued "
+    "until confirm_handoff says queued. When he asks how a handoff went, call handoff_status. "
     "Do not say the work has begun. Do not send, spend, merge, publish, or delete. "
     "Do not open another Queen. The meta harness is the seat lookup. "
     "For the desk, the operator, what was just said, or a search of this machine, call estate_lookup. "
@@ -87,7 +91,8 @@ _TOOL = {
     "name": "meta_harness",
     "description": (
         "Route one spoken work request through the Starlight meta harness. "
-        "Returns the seat. Does not start the seat. There is no approval gate."
+        "Returns the seat and, for public repo work, a proposal that needs Frank's spoken go "
+        "and his approve press. Does not start the seat."
     ),
     "parameters": {
         "type": "object",
@@ -125,6 +130,31 @@ _LOOKUP = {
     },
 }
 
+_PROPOSAL_PARAM = {
+    "type": "object",
+    "properties": {"proposal": {"type": "string", "description": "The proposal id meta_harness returned."}},
+    "required": ["proposal"],
+}
+
+_CONFIRM = {
+    "type": "function",
+    "name": "confirm_handoff",
+    "description": (
+        "Record Frank's spoken go for one proposal. Call only after he says go for it. "
+        "Queues a Queen card only if he has also pressed approve."
+    ),
+    "parameters": _PROPOSAL_PARAM,
+}
+
+_STATUS = {
+    "type": "function",
+    "name": "handoff_status",
+    "description": "Read where one proposal is: waiting, queued, running, reported, or failed.",
+    "parameters": _PROPOSAL_PARAM,
+}
+
+CLIENT_TOOLS = frozenset({"meta_harness", "estate_lookup", "confirm_handoff", "handoff_status"})
+
 
 def session_update(
     memory: str = "",
@@ -145,7 +175,7 @@ def session_update(
         tools.append(_SERVER_TOOLS[0])
         if x_search:
             tools.append(_SERVER_TOOLS[1])
-    tools.extend([_TOOL, _LOOKUP])
+    tools.extend([_TOOL, _LOOKUP, _CONFIRM, _STATUS])
     notes: list[str] = []
     earlier = " ".join(prior.split())
     block = " ".join(memory.split())
@@ -230,7 +260,7 @@ def server_tool_hit(event: dict) -> str:
 
     kind = str(event.get("type") or "")
     name = str(event.get("name") or "")
-    if name in {"meta_harness", "estate_lookup"}:
+    if name in CLIENT_TOOLS:
         return ""
     if not (kind.endswith(".completed") or kind.endswith(".done")):
         return ""
@@ -254,11 +284,15 @@ def parse_arguments(raw: object) -> dict:
 
 def handle_meta_harness(arguments: dict) -> dict[str, object]:
     try:
-        return route_work(
+        packet = route_work(
             utterance=str(arguments.get("utterance") or ""),
             job=str(arguments.get("job") or "dispatch"),
             claimed_class=arguments.get("data_class"),
         )
+        if approval.tier(packet) != "B":
+            return packet
+        offer = approval.propose(packet)
+        return {**packet, "proposal": offer["proposal"], "spoken": offer["spoken"], "queued": False}
     except Exception as exc:
         return {
             "ok": False,
@@ -663,6 +697,7 @@ def face_fields(arguments: dict, result: dict) -> dict[str, object]:
         "house": named_house(str(arguments.get("utterance") or "")),
         "started": False,
         "line": spoken if isinstance(spoken, str) else "",
+        "proposal": str(result.get("proposal") or ""),
     }
 
 
@@ -681,6 +716,11 @@ async def _finish_tools(ws, calls: list[dict], box: dict[str, str] | None = None
             _touch_live(box, **face_fields(arguments, result))
         elif name == "estate_lookup":
             result = estate_lookup(str(arguments.get("query") or ""))
+        elif name == "confirm_handoff":
+            result = approval.confirm_spoken(str(arguments.get("proposal") or ""))
+            _touch_live(box, line=str(result.get("spoken") or ""), proposal=result.get("proposal") or "")
+        elif name == "handoff_status":
+            result = approval.status(str(arguments.get("proposal") or ""))
         else:
             result = {"ok": False, "started": False, "spoken": "That tool is not on this operator."}
         spoken = result.get("spoken")

@@ -40,6 +40,9 @@ def main(argv: list[str] | None = None) -> int:
     listen.add_argument("--check", action="store_true", help="Print readiness JSON and exit")
     listen.add_argument("--text", default="", help="One spoken text turn, then exit")
 
+    approve = sub.add_parser("approve", help="Human ack for a voice handoff (the second half of the tier-B gate)")
+    approve.add_argument("proposal", nargs="?", default="", help="The spoken 4-character code; omit to list what is waiting")
+
     disp = sub.add_parser("dispatch", help="Route a coding task to the fleet (dry-run packet preview)")
     disp.add_argument("task", nargs="+")
     disp.add_argument("--live", action="store_true", help="Actually spawn the chosen CLI for Tier-A tasks")
@@ -107,6 +110,16 @@ def main(argv: list[str] | None = None) -> int:
         spoken = synthesize_spoken(brief) if args.speak else brief.headline()
         print(json.dumps({"brief_file": str(out), "count": len(brief.items), "spoken": spoken}, separators=(",", ":")))
         return 0
+
+    if args.command == "approve":
+        from . import approval
+
+        if not args.proposal:
+            print(json.dumps({"pending": approval.pending_details()}, ensure_ascii=False))
+            return 0
+        result = approval.ack_human(args.proposal)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result["ok"] else 2
 
     if args.command == "listen":
         from .x_voice import run_listen

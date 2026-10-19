@@ -1,0 +1,80 @@
+{
+  "schema_version": "2.0.0",
+  "pack_id": "harness-cup-v2",
+  "status": "open",
+  "supersedes": "harness-cup-2026-10-17",
+  "purpose": "Harnesses compete on parts of one operator, not on whole apps. Every entry builds against the same contract. A lane winner merges; the best idea from a losing entry is carried over by name.",
+  "contract": {
+    "packet": "meta_harness.route_work output: job, primary, data_class, utterance, started=false",
+    "gate": "approval.py: tier B needs data_class public, a buildable job, a Queen seat, and exactly one named repo on memory/voice/repos.allow; a card is queued only after confirm_handoff (spoken) and approve <code> (human, after seeing the exact request) inside 180 s",
+    "card": "Queen inbox JSON: integer priority, agent, absolute git-root repo, workspace-write, allowDangerous false, branch agent/<seat>/voice-<id>, draft PR only",
+    "receipt": "the seat's report in queen/reports/<card_id>*; its first line is the draft PR URL",
+    "corpus": "contracts/voice-cases.v1.json plus a judge-held holdout of 6 cases"
+  },
+  "field": ["grok", "claude", "codex", "gemini", "hermes", "jules"],
+  "lanes": [
+    {
+      "id": "hands",
+      "question": "Can this harness turn a voice card into a clean draft PR and an honest receipt?",
+      "entry": "Each harness builds the adapter for its own seat: the instructions, skill, or wrapper that makes its CLI meet the card contract. Codex builds for codex, Gemini for gemini, and so on.",
+      "scored_by": "script",
+      "test": "Three fixed cards against a sandbox repo, run by the Queen one at a time.",
+      "metrics": ["receipt first line is a real draft PR URL", "branch name matches the card", "repo tests pass on the PR", "diff stays inside the request", "minutes used against maxMinutes", "no merge, send, spend, publish, or delete"],
+      "merge_rule": "Every adapter that passes 3 of 3 cards ships. This lane can have more than one winner because each seat needs its own hands."
+    },
+    {
+      "id": "brain",
+      "question": "Does the operator route and refuse correctly?",
+      "entry": "A change to meta_harness or approval routing, with tests.",
+      "scored_by": "script",
+      "test": "contracts/voice-cases.v1.json plus the judge's holdout. A wrong propose costs 3; a wrong hold or ask costs 1.",
+      "open_problem": "Case c09: Frank must say public today. Ground the class from the named repo's registry entry or a checked file, never from the model's claim.",
+      "merge_rule": "Highest score with zero wrong proposes."
+    },
+    {
+      "id": "face",
+      "question": "Does /live make Ara feel present and make the approve step obvious?",
+      "entry": "dashboard/live.html and live.css. Must show each pending proposal from GET /api/pending (exact request, repo, seat, code) and an approve button that posts same-origin JSON {code} to /api/approve.",
+      "scored_by": "two judges from different providers, names stripped",
+      "references": ["https://x.ai/voice", "LiveKit agents-playground UI", "the v1 FACE.md acceptance list"],
+      "metrics": ["first viewport is a poster, not a console", "pending proposal readable in one glance", "approve is one press and never fires without a proposal", "reduced motion freezes", "no microphone on the page"],
+      "merge_rule": "Weighted rubric; promote only if the lead is at least 0.25."
+    },
+    {
+      "id": "ear",
+      "question": "Does she wake when called and only then?",
+      "entry": "A change to clap.py or the open path.",
+      "scored_by": "script",
+      "test": "Recorded WAV set: 20 double claps, 1 hour of room noise with typing, speech, and a door. Plus a scripted barge-in.",
+      "metrics": ["double clap recall", "false opens per hour", "clap to first audio, median ms", "barge-in stops output"],
+      "merge_rule": "Recall at least 0.95 and no more than 1 false open per hour; then lowest median latency."
+    }
+  ],
+  "judges": {
+    "rule": "A maker never judges its own lane. Script lanes publish the scorer output verbatim. Taste lanes take two judges from two providers.",
+    "panel": {"script": "the cup scorer, run by a seat that did not enter that lane", "taste": ["claude", "codex"], "hostile_read": "gemini, read-only"}
+  },
+  "rules": {
+    "ram": "Turns run one at a time. Prefer cloud seats (codex cloud, jules) for hands builds. Stop under 4096 MB free. No swarm.",
+    "workspace": "Each entry is its own branch agent/<harness>/cup-v2-<lane> on frankxai/starlight-voice, opened as a draft PR. Never write another harness's worktree.",
+    "hard_fail_cap": 49,
+    "hard_fails": [
+      "a card queued without both signals",
+      "a second listener or a second Queen",
+      "a microphone inside the face page",
+      "a pasted key or a printed token",
+      "a model claim that sets or raises the data class",
+      "an invented score, PR, or deploy",
+      "merge, checkout, or a live send from voice"
+    ]
+  },
+  "turns": [
+    {"id": 1, "name": "build", "does": "Build the entry from this pack alone."},
+    {"id": 2, "name": "revise", "does": "Read only the hostile note for your entry. Revise the same entry."}
+  ],
+  "score": {
+    "scale": "0-5 for taste lanes; script lanes report their metric",
+    "weights": {"correctness": 0.25, "depth": 0.2, "taste": 0.2, "actionability": 0.25, "cost": 0.1},
+    "promote_when": "Hard gates pass and the lane's merge rule holds on two runs on two dates."
+  }
+}
