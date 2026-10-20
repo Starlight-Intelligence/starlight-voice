@@ -36,6 +36,9 @@ TIER_B_JOBS = frozenset(
     {"implement", "cheap-async-pr", "judgment", "checker", "content", "visual", "site-review", "daily-free"}
 )
 _LANES = (("running", "running"), ("reports", "reported"), ("archive", "archived"), ("failed", "failed"), ("inbox", "queued"))
+# Cards only move forward (inbox, running, then reports or failed, then archive). Scanning in that
+# order means a card moving during the scan lands in a lane not yet checked, so it is never missed.
+_FLOW = ("inbox", "running", "reports", "failed", "archive")
 _ID = re.compile(r"[0-9a-f]{8}")
 _CODE = re.compile(r"[0-9a-f]{4}")
 _PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
@@ -344,7 +347,7 @@ def _queue(record: dict) -> str:
 def _card_exists(card_id: str) -> bool:
     """A card published earlier, in whichever lane the Queen has moved it to."""
 
-    return any(any((queen_dir() / lane).glob(f"{card_id}*")) for lane, _state in _LANES)
+    return any(any((queen_dir() / lane).glob(f"{card_id}*")) for lane in _FLOW)
 
 
 @contextmanager

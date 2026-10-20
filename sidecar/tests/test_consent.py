@@ -19,6 +19,10 @@ def test_only_a_short_explicit_answer_counts() -> None:
     assert consent.verdict("sure thing let's maybe look again later") is None, "too long to be an answer"
     assert consent.verdict("go") is None
     assert consent.verdict("Confirm?") is None, "the read-back's own last word is not a yes"
+    assert consent.verdict("okay where is my phone") is None
+    assert consent.verdict("yes later") is None
+    assert consent.verdict("yes close number 4") == "yes"
+    assert consent.verdict("ja bitte") == "yes"
 
 
 def test_a_refusal_anywhere_beats_a_yes() -> None:
@@ -56,12 +60,30 @@ def test_speech_during_aras_audio_is_marked_ineligible() -> None:
 
 
 def test_the_answer_window_arms_after_the_read_back_response() -> None:
-    box: dict = {"consent": consent.Pending(kind="triage", readback="r"), "playback_until": 50.0}
-    x_voice.arm_after_readback(box, now=48.0)
+    box: dict = {"consent": consent.Pending(kind="triage", readback="r"), "playback_until": 50.0, "response_audio": 9600}
+    x_voice.arm_after_readback(box, now=48.0, event={"type": "response.done", "response": {"status": "completed"}})
     assert box["consent"].armed is True
     assert box["consent"].at == pytest.approx(50.0 + consent.ECHO_TAIL_S)
     x_voice.arm_after_readback(box, now=60.0)
     assert box["consent"].at == pytest.approx(50.0 + consent.ECHO_TAIL_S), "arming happens once"
+
+
+def test_a_response_with_no_audio_does_not_arm() -> None:
+    box: dict = {"consent": consent.Pending(kind="triage", readback="r"), "playback_until": 0.0, "response_audio": 0}
+    x_voice.arm_after_readback(box, now=10.0, event={"type": "response.done", "response": {"status": "completed"}})
+    assert box["consent"].armed is False
+
+
+def test_a_cancelled_read_back_drops_the_consent() -> None:
+    box: dict = {"consent": consent.Pending(kind="triage", readback="r"), "response_audio": 4800}
+    x_voice.arm_after_readback(box, now=10.0, event={"type": "response.done", "response": {"status": "cancelled"}})
+    assert box["consent"] is None
+
+
+def test_cards_are_looked_for_in_the_order_they_move() -> None:
+    from starlight_voice import approval
+
+    assert approval._FLOW == ("inbox", "running", "reports", "failed", "archive")
 
 
 def test_the_model_never_receives_the_triage_token() -> None:

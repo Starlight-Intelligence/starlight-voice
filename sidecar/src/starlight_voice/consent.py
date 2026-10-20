@@ -21,11 +21,17 @@ _DENY = re.compile(
     r"\b(no|nope|nah|don'?t|do not|stop|cancel|wait|hold on|not|never mind|nein|nee|niet|warte|abbrechen|stopp)\b",
     re.IGNORECASE,
 )
-# The answer has to open with the yes. "Where to go for lunch" is not an answer.
+# The answer has to open with the yes, and every word in it has to belong to a confirmation.
+# "Okay, where is my phone" and "yes, later" are not answers.
 _OPENERS = (
     "yes", "yeah", "yep", "yup", "sure", "correct", "okay", "ok", "affirmative",
     "do it", "go ahead", "that's right", "thats right",
     "ja", "jawohl", "genau", "klopt", "doe maar",
+)
+_CONFIRMING = frozenset(
+    "yes yeah yep yup sure correct okay ok affirmative do it go ahead that's thats right please "
+    "close keep review hand off handoff confirm confirmed that one this number "
+    "ja jawohl genau bitte klopt doe maar prima mach es".split()
 )
 _WORDS = re.compile(r"[a-z0-9']+")
 
@@ -43,7 +49,8 @@ def verdict(line: str) -> str | None:
         return "no"
     if len(words) > MAX_ANSWER_WORDS:
         return None
-    if any(text == opener or text.startswith(opener + " ") for opener in _OPENERS):
+    opens = any(text == opener or text.startswith(opener + " ") for opener in _OPENERS)
+    if opens and all(word in _CONFIRMING or word.isdigit() for word in words):
         return "yes"
     return None
 

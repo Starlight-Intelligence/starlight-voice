@@ -828,6 +828,7 @@ def note_playback(box: dict, pcm_bytes: int, now: float) -> None:
 
     seconds = pcm_bytes / (SAMPLE_RATE * 2)
     box["playback_until"] = max(now, float(box.get("playback_until") or 0.0)) + seconds
+    box["response_audio"] = int(box.get("response_audio") or 0) + pcm_bytes
 
 
 def eligible_start(box: dict, now: float) -> float | None:
@@ -838,12 +839,24 @@ def eligible_start(box: dict, now: float) -> float | None:
     return now
 
 
-def arm_after_readback(box: dict | None, now: float) -> None:
-    """The response that spoke the read-back has finished; the answer window opens after its audio."""
+def arm_after_readback(box: dict | None, now: float, event: dict | None = None) -> None:
+    """The response that spoke the read-back has finished; the answer window opens after its audio.
+
+    Only a completed response that actually played audio counts as the read-back. A cancelled or
+    failed one drops the pending consent: Frank never heard what he would be saying yes to.
+    """
 
     pending = box.get("consent") if box is not None else None
-    if pending is not None and not pending.armed:
-        pending.arm(float(box.get("playback_until") or 0.0), now)
+    if pending is None or pending.armed:
+        return
+    response = (event or {}).get("response") if isinstance((event or {}).get("response"), dict) else {}
+    status = str(response.get("status") or "completed")
+    if status != "completed":
+        box["consent"] = None
+        return
+    if int(box.get("response_audio") or 0) <= 0:
+        return
+    pending.arm(float(box.get("playback_until") or 0.0), now)
 
 
 async def _finish_tools(ws, calls: list[dict], box: dict[str, str] | None = None) -> None:
@@ -936,6 +949,10 @@ async def _pump(
             "response.done",
         }:
             activity["at"] = time.monotonic()
+        if kind == "response.created" and box is not None:
+            box["response_audio"] = 0
+        if kind == "response.cancelled" and box is not None and box.get("consent") is not None and not box["consent"].armed:
+            box["consent"] = None
         if kind == "input_audio_buffer.speech_started" and box is not None and event.get("item_id"):
             box.setdefault("speech_starts", {})[str(event["item_id"])] = eligible_start(box, time.monotonic())
         line = note_transcript(event)
@@ -993,7 +1010,7 @@ async def _pump(
             saw["done"] = False
         elif kind == "response.done":
             saw["done"] = True
-            arm_after_readback(box, time.monotonic())
+            arm_after_readback(box, time.monotonic(), event)
 
 
 async def _send_mic(ws, ear: Ear, closed: asyncio.Event) -> None:
