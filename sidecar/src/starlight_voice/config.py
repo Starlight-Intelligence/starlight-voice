@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -9,6 +10,17 @@ ENV_FILES = (".env.local", ".env")
 INFISICAL_DOMAIN = "https://eu.infisical.com"
 INFISICAL_ORG = "a40109f1-3b54-477e-a7f9-805dd8abe602"
 INFISICAL_PROJECT = "5578966b-0c74-4253-9a3c-bace21d97b24"
+
+
+# Credentials a child process never needs: xAI keys, the management key, the tool-plane bearer,
+# and any *_API_KEY / *_TOKEN / *_SECRET loaded from .env.local into this process.
+_SECRET_NAME = re.compile(r"(^XAI_|_API_KEY$|_TOKEN$|_SECRET$|_PASSWORD$|MANAGEMENT)", re.IGNORECASE)
+
+
+def scrubbed_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    env = {name: value for name, value in os.environ.items() if not _SECRET_NAME.search(name)}
+    env.update(extra or {})
+    return env
 
 
 def infisical_enabled() -> bool:
@@ -34,6 +46,7 @@ def infisical_secret(name: str) -> str:
             capture_output=True,
             timeout=20,
             check=False,
+            env=scrubbed_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""

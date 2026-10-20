@@ -13,7 +13,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from .config import repo_root
+from .config import repo_root, scrubbed_env
 
 JOBS = (
     "dispatch",
@@ -126,6 +126,7 @@ def ground_dirty(root: Path | None = None) -> bool:
             text=True,
             timeout=5,
             check=False,
+            env=scrubbed_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return True
@@ -268,6 +269,7 @@ def _node(argv: list[str]) -> str:
         timeout=20,
         shell=False,
         check=False,
+        env=scrubbed_env(),
     )
     if proc.returncode != 0:
         raise RuntimeError("dispatch-route failed")

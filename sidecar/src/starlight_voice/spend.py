@@ -371,8 +371,12 @@ def _management_creds(secret=None) -> tuple[str, str]:
     def remembered(name: str) -> str:
         if secret is not None:
             return pull(name) or ""
-        if name not in _vault:
-            _vault[name] = (pull(name) or "").strip()
+        # Only a value is cached. A miss (Infisical down, not logged in yet) is asked again next time.
+        if not _vault.get(name):
+            value = (pull(name) or "").strip()
+            if value:
+                _vault[name] = value
+            return value
         return _vault[name]
 
     return key or _first(MANAGEMENT_KEY_NAMES, remembered), team or _first(TEAM_ID_NAMES, remembered)

@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from . import approval, tool_plane
+from . import approval, consent, tool_plane, triage_bridge
 from .audio_contract import float32_to_pcm16le
 from .clap import ClapDetector
 from .config import infisical_enabled, infisical_secret, load_local_env, repo_root
@@ -69,7 +69,10 @@ INSTRUCTIONS = (
     "call meta_harness before you answer. Say the seat by name. "
     "started is always false: you never start a harness, the Queen does. "
     "When meta_harness returns a proposal, read back its line and wait. "
-    "Only after Frank clearly says go for that proposal, call confirm_handoff with it. "
+    "Frank's own yes is heard directly by the listener; only after that may confirm_handoff succeed. "
+    "For triage, call triage_next to hear what needs him, and triage_decide with the item number "
+    "and his action to read the decision back. Then wait: an operator note tells you whether it was recorded. "
+    "Never say a triage decision is recorded before that note. "
     "His spoken go is half the gate; he must also press approve, so never say the work is queued "
     "until confirm_handoff says queued. When he asks how a handoff went, call handoff_status. "
     "Do not say the work has begun. Do not send, spend, merge, publish, or delete. "
@@ -182,8 +185,37 @@ _ESTATE_STATUS = {
     },
 }
 
+_TRIAGE_NEXT = {
+    "type": "function",
+    "name": "triage_next",
+    "description": "Read the next agent pull requests that need Frank, from the morning triage queue. Read-only.",
+    "parameters": {
+        "type": "object",
+        "properties": {"count": {"type": "integer", "description": "How many to read, 1 to 5."}},
+        "required": [],
+    },
+}
+
+_TRIAGE_DECIDE = {
+    "type": "function",
+    "name": "triage_decide",
+    "description": (
+        "Read back one triage decision for Frank to answer. Records nothing: his own spoken yes, "
+        "heard directly by the listener, records it."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ref": {"type": "string", "description": "The item number from the queue, digits only."},
+            "action": {"type": "string", "enum": ["keep", "close", "review", "handoff"]},
+        },
+        "required": ["ref", "action"],
+    },
+}
+
 CLIENT_TOOLS = frozenset({
     "meta_harness", "estate_lookup", "confirm_handoff", "handoff_status", "recall", "estate_status",
+    "triage_next", "triage_decide",
 })
 
 
@@ -206,7 +238,7 @@ def session_update(
         tools.append(_SERVER_TOOLS[0])
         if x_search:
             tools.append(_SERVER_TOOLS[1])
-    tools.extend([_TOOL, _LOOKUP, _CONFIRM, _STATUS, _RECALL, _ESTATE_STATUS])
+    tools.extend([_TOOL, _LOOKUP, _CONFIRM, _STATUS, _RECALL, _ESTATE_STATUS, _TRIAGE_NEXT, _TRIAGE_DECIDE])
     instructions += f" Today is {datetime.now().astimezone():%A %d %B %Y, %H:%M}."
     notes: list[str] = []
     earlier = " ".join(prior.split())
@@ -713,6 +745,85 @@ def face_fields(arguments: dict, result: dict) -> dict[str, object]:
     }
 
 
+def confirm_heard(box: dict | None, proposal: str) -> dict[str, object]:
+    """The model may ask, but only Frank's transcribed yes, heard by the listener, confirms a handoff."""
+
+    if box is not None and proposal and box.get("heard_handoff") == proposal:
+        return approval.confirm_spoken(proposal)
+    return {
+        "ok": False, "started": False, "queued": False, "proposal": proposal,
+        "spoken": "I have not heard Frank say yes to that handoff yet.",
+    }
+
+
+def open_triage_consent(box: dict | None, asked: dict) -> dict[str, object]:
+    """Keep the token with the listener and give the model only the words to read back."""
+
+    if not asked.get("ok"):
+        return {key: value for key, value in asked.items() if key != "token"}
+    if box is not None:
+        box["consent"] = consent.Pending(
+            kind="triage", ref=str(asked["ref"]), action=str(asked["action"]),
+            token=str(asked["token"]), readback=str(asked["readback"]),
+        )
+    return {
+        "ok": True, "started": False, "readback": asked["readback"],
+        "spoken": f"{asked['readback']} Wait for Frank's answer; it is heard directly.",
+    }
+
+
+def operator_note(text: str) -> dict[str, object]:
+    return {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "system",
+            "content": [{"type": "input_text", "text": f"Operator note from the listener, not from Frank: {text}"}],
+        },
+    }
+
+
+def settle_consent(box: dict, pending: consent.Pending, answer: str) -> str:
+    if answer == "no":
+        return "Frank said no. Nothing was recorded."
+    if pending.kind == "handoff":
+        box["heard_handoff"] = pending.proposal
+        return str(approval.confirm_spoken(pending.proposal).get("spoken") or "Frank's go is recorded.")
+    return str(triage_bridge.record(pending.ref, pending.action, pending.token).get("spoken") or "Not recorded.")
+
+
+async def _hear(ws, box: dict | None, text: str, spoke_at: float | None) -> None:
+    """Frank's own transcript answers a pending read-back. Nothing the model says can do this."""
+
+    if box is None:
+        return
+    pending = box.get("consent")
+    answer = consent.answer(pending, text, spoke_at=spoke_at)
+    if answer is None:
+        return
+    box["consent"] = None
+    if answer == "expired":
+        return
+    note = await asyncio.to_thread(settle_consent, box, pending, answer)
+    print(note, flush=True)
+    append_event("consent", session_id=box.get("session_id", ""), kind=pending.kind, answer=answer)
+    _touch_live(box, line=note[:180])
+    await ws.send(json.dumps(operator_note(note)))
+    await ws.send(json.dumps({"type": "response.create"}))
+
+
+def speech_start(box: dict | None, event: dict) -> float | None:
+    """When Frank began the utterance this transcript belongs to, if the socket said."""
+
+    if box is None:
+        return None
+    starts = box.get("speech_starts") or {}
+    item = str(event.get("item_id") or "")
+    if item and item in starts:
+        return starts[item]
+    return None
+
+
 async def _finish_tools(ws, calls: list[dict], box: dict[str, str] | None = None) -> None:
     for event in calls:
         name = str(event.get("name") or "")
@@ -726,11 +837,18 @@ async def _finish_tools(ws, calls: list[dict], box: dict[str, str] | None = None
         if name == "meta_harness":
             result = handle_meta_harness(arguments)
             _touch_live(box, **face_fields(arguments, result))
+            if box is not None and result.get("proposal"):
+                box["consent"] = consent.Pending(kind="handoff", proposal=str(result["proposal"]), readback=str(result.get("spoken") or ""))
         elif name == "estate_lookup":
             result = estate_lookup(str(arguments.get("query") or ""))
         elif name == "confirm_handoff":
-            result = approval.confirm_spoken(str(arguments.get("proposal") or ""))
+            result = confirm_heard(box, str(arguments.get("proposal") or ""))
             _touch_live(box, line=str(result.get("spoken") or ""), proposal=result.get("proposal") or "")
+        elif name == "triage_next":
+            result = await asyncio.to_thread(triage_bridge.next_items, arguments.get("count") or 3)
+        elif name == "triage_decide":
+            result = open_triage_consent(box, await asyncio.to_thread(
+                triage_bridge.ask, str(arguments.get("ref") or ""), str(arguments.get("action") or "")))
         elif name == "handoff_status":
             result = approval.status(str(arguments.get("proposal") or ""))
         elif name == "recall":
@@ -796,6 +914,8 @@ async def _pump(
             "response.done",
         }:
             activity["at"] = time.monotonic()
+        if kind == "input_audio_buffer.speech_started" and box is not None and event.get("item_id"):
+            box.setdefault("speech_starts", {})[str(event["item_id"])] = time.monotonic()
         line = note_transcript(event)
         if line:
             print(line, flush=True)
@@ -806,6 +926,8 @@ async def _pump(
                 short = line[:180]
                 append_event("transcript", session_id=box.get("session_id", ""), line=short)
                 _touch_live(box, line=short, conversation_id=box.get("conversation_id", ""))
+                if line.startswith("you: "):
+                    await _hear(ws, box, line[5:], speech_start(box, event))
         delta = audio_delta(event)
         if delta:
             try:
