@@ -51,6 +51,29 @@ def _both(proposal: str) -> dict[str, object]:
     return approval.confirm_spoken(proposal)
 
 
+def test_a_card_is_published_whole_and_never_twice(estate: dict[str, Path]) -> None:
+    proposal = approval.propose(_packet())["proposal"]
+    record = approval._load(proposal)
+    card_id = f"voice-{proposal}"
+    # A run that published and stopped before saving: the Queen already moved the card to running.
+    (estate["queen"] / "running" / f"{card_id}.json").write_text("{}", encoding="utf-8")
+    record["publishing"] = card_id
+    approval._save(record)
+    result = _both(proposal)
+    assert result["queued"] is True
+    assert _cards(estate) == [], "not republished into the inbox"
+    assert approval._load(proposal)["card_id"] == card_id
+    assert list((estate["queen"] / "_staging").glob("*")) == []
+
+
+def test_a_fresh_card_lands_in_the_inbox_complete(estate: dict[str, Path]) -> None:
+    proposal = approval.propose(_packet())["proposal"]
+    _both(proposal)
+    cards = _cards(estate)
+    assert len(cards) == 1 and cards[0]["id"] == f"voice-{proposal}"
+    assert list((estate["queen"] / "_staging").glob("*")) == [], "no temp file left behind"
+
+
 def test_tier_b_needs_public_class_known_job_and_queen_seat() -> None:
     assert approval.tier(_packet()) == "B"
     assert approval.tier(_packet(job="integrate")) == "C"

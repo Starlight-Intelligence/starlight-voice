@@ -56,11 +56,10 @@ def _run(args: list[str], runner=None) -> dict:
 def next_items(count: int = 3, runner=None) -> dict[str, object]:
     count = max(1, min(int(count or 3), 5))
     out = _run(["next", "--count", str(count)], runner)
-    if out.get("error"):
-        return {"ok": False, "started": False, "spoken": str(out["error"])[:200]}
-    if "spoken" not in out:
-        return out
-    return {"ok": True, "started": False, "remaining": out.get("remaining", 0), "spoken": str(out["spoken"])[:900]}
+    # Only named fields reach the model, whatever the command printed.
+    if out.get("error") or not isinstance(out.get("spoken"), str):
+        return {"ok": False, "started": False, "spoken": str(out.get("error") or "Triage gave no queue.")[:200]}
+    return {"ok": True, "started": False, "remaining": int(out.get("remaining") or 0), "spoken": out["spoken"][:900]}
 
 
 def ask(ref: str, action: str, runner=None) -> dict[str, object]:

@@ -1,39 +1,49 @@
 """Consent comes from Frank's transcribed words, never from the model.
 
-A read-back opens one pending consent. Only an input transcript (his microphone, transcribed by the
-socket) can answer it. The model sees the read-back but never the token, so it cannot confirm on its
-own, and a tool result telling it to "confirm now" has nothing to confirm with.
+A read-back opens one pending consent. It arms only after Ara has finished speaking the read-back,
+and only speech that began after that, outside her own playback and its echo tail, can answer it.
+The answer must be short and explicit. The model sees the read-back but never the token, so it
+cannot confirm on its own, and a tool result telling it to "confirm now" has nothing to confirm with.
 """
 
 from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 WINDOW_S = 45.0
+# Speech starting this soon after Ara's audio stops may be her own voice in the room.
+ECHO_TAIL_S = 1.5
+MAX_ANSWER_WORDS = 5
 
-# A refusal anywhere wins over an affirmative ("no, wait, yes" is not a clear yes).
 _DENY = re.compile(
-    r"\b(no|nope|nah|don'?t|do not|stop|cancel|wait|hold on|not that|never mind|nein|nee|niet|warte|abbrechen|stopp)\b",
+    r"\b(no|nope|nah|don'?t|do not|stop|cancel|wait|hold on|not|never mind|nein|nee|niet|warte|abbrechen|stopp)\b",
     re.IGNORECASE,
 )
-# "confirm" is left out on purpose: read-backs end with "Confirm?", and a speaker echo of that must not count.
-_AFFIRM = re.compile(
-    r"\b(yes|yeah|yep|yup|sure|do it|go ahead|go|correct|that'?s right|okay|ok|ja|jawohl|genau|klar|klopt|doe maar|prima)\b",
-    re.IGNORECASE,
+# The answer has to open with the yes. "Where to go for lunch" is not an answer.
+_OPENERS = (
+    "yes", "yeah", "yep", "yup", "sure", "correct", "okay", "ok", "affirmative",
+    "do it", "go ahead", "that's right", "thats right",
+    "ja", "jawohl", "genau", "klopt", "doe maar",
 )
-_WORD = re.compile(r"[a-z0-9']+")
-ECHO_OVERLAP = 0.6
+_WORDS = re.compile(r"[a-z0-9']+")
+
+
+def _words(line: str) -> list[str]:
+    return _WORDS.findall(str(line).lower())
 
 
 def verdict(line: str) -> str | None:
-    text = " ".join(str(line).split())
-    if not text:
+    words = _words(line)
+    if not words:
         return None
+    text = " ".join(words)
     if _DENY.search(text):
         return "no"
-    if _AFFIRM.search(text):
+    if len(words) > MAX_ANSWER_WORDS:
+        return None
+    if any(text == opener or text.startswith(opener + " ") for opener in _OPENERS):
         return "yes"
     return None
 
@@ -46,33 +56,36 @@ class Pending:
     ref: str = ""
     action: str = ""
     proposal: str = ""
-    at: float = field(default_factory=time.monotonic)
+    armed: bool = False
+    at: float = 0.0  # when the read-back finished playing, plus the echo tail
+    opened: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.opened:
+            self.opened = time.monotonic()
+
+    def arm(self, playback_until: float, now: float | None = None) -> None:
+        clock = now if now is not None else time.monotonic()
+        self.at = max(clock, playback_until) + ECHO_TAIL_S
+        self.armed = True
 
     def expired(self, now: float | None = None) -> bool:
-        return (now if now is not None else time.monotonic()) - self.at > WINDOW_S
-
-
-def is_echo(line: str, readback: str) -> bool:
-    """The microphone hearing Ara's own read-back is not Frank answering it."""
-
-    heard = set(_WORD.findall(line.lower()))
-    said = set(_WORD.findall(readback.lower()))
-    return len(heard) >= 3 and len(heard & said) / len(heard) >= ECHO_OVERLAP
+        clock = now if now is not None else time.monotonic()
+        start = self.at if self.armed else self.opened
+        return clock - start > WINDOW_S
 
 
 def answer(pending: Pending | None, line: str, *, spoke_at: float | None, now: float | None = None) -> str | None:
     """'yes' or 'no' when this transcript settles the pending consent, 'expired', or None to keep waiting.
 
-    ``spoke_at`` is when Frank started the utterance. Speech that began before the read-back (a
-    command and a "go" said in one breath) never counts as an answer to it.
+    ``spoke_at`` is when Frank began the utterance, or None when it began during Ara's playback.
+    Speech that began before the read-back finished never answers it.
     """
 
     if pending is None:
         return None
     if pending.expired(now):
         return "expired"
-    if spoke_at is None or spoke_at <= pending.at:
-        return None
-    if is_echo(line, pending.readback):
+    if not pending.armed or spoke_at is None or spoke_at <= pending.at:
         return None
     return verdict(line)

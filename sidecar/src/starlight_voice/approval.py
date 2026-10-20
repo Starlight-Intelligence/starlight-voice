@@ -262,7 +262,14 @@ def _signal_locked(proposal: str, field: str, clock: float) -> dict[str, object]
         return _reply(proposal, queued=False, spoken="Noted. Waiting for the other signal.", waiting_for=_waiting(record))
     if not _repo_ok(Path(record["repo"])):
         return _reply(proposal, queued=False, spoken="That repo is no longer allowed. Held.", reasons=["repo-not-allowed"])
-    record["card_id"] = _queue(record)
+    # Record the intent before the card can be seen. A run that stopped after publishing finds the
+    # card in some Queen lane on retry and never publishes it a second time.
+    card_id = f"voice-{record['id']}"
+    record["publishing"] = card_id
+    _save(record)
+    if not _card_exists(card_id):
+        _queue(record)
+    record["card_id"] = card_id
     _save(record)
     return _reply(
         proposal,
@@ -317,13 +324,27 @@ def _queue(record: dict) -> str:
         "prompt": card_prompt(agent, record["repo"], branch, record["request"], done),
     }
     inbox = queen_dir() / "inbox"
+    staging = queen_dir() / "_staging"
     inbox.mkdir(parents=True, exist_ok=True)
-    try:
-        with (inbox / f"{card_id}.json").open("x", encoding="utf-8") as handle:
-            handle.write(json.dumps(card, indent=2, ensure_ascii=False))
-    except FileExistsError:
-        pass
+    staging.mkdir(parents=True, exist_ok=True)
+    # Written whole outside the inbox, then moved in: the Queen never sees a half-written card.
+    tmp = staging / f"{card_id}.{secrets.token_hex(4)}.tmp"
+    with tmp.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(card, indent=2, ensure_ascii=False))
+        handle.flush()
+        os.fsync(handle.fileno())
+    target = inbox / f"{card_id}.json"
+    if target.exists():
+        tmp.unlink()
+    else:
+        os.replace(tmp, target)
     return card_id
+
+
+def _card_exists(card_id: str) -> bool:
+    """A card published earlier, in whichever lane the Queen has moved it to."""
+
+    return any(any((queen_dir() / lane).glob(f"{card_id}*")) for lane, _state in _LANES)
 
 
 @contextmanager

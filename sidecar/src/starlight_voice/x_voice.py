@@ -403,7 +403,8 @@ def key_from_infisical(runner=None) -> str | None:
     if value.startswith("XAI_API_KEY="):
         value = value.split("=", 1)[1].strip().strip('"').strip("'")
     shaped = value if xai_shaped(value) else None
-    if runner is _infisical_stdout or runner is None:
+    # Only a key is cached. A miss (Infisical down, not logged in yet) is asked again next time.
+    if shaped and (runner is _infisical_stdout or runner is None):
         _pulled = shaped
         _pulled_set = True
     return shaped
@@ -813,15 +814,36 @@ async def _hear(ws, box: dict | None, text: str, spoke_at: float | None) -> None
 
 
 def speech_start(box: dict | None, event: dict) -> float | None:
-    """When Frank began the utterance this transcript belongs to, if the socket said."""
+    """When Frank began the utterance this transcript belongs to; None if unknown or during Ara's audio."""
 
     if box is None:
         return None
     starts = box.get("speech_starts") or {}
     item = str(event.get("item_id") or "")
-    if item and item in starts:
-        return starts[item]
-    return None
+    return starts.get(item) if item else None
+
+
+def note_playback(box: dict, pcm_bytes: int, now: float) -> None:
+    """Track when Ara's queued audio will have finished playing (16-bit mono at SAMPLE_RATE)."""
+
+    seconds = pcm_bytes / (SAMPLE_RATE * 2)
+    box["playback_until"] = max(now, float(box.get("playback_until") or 0.0)) + seconds
+
+
+def eligible_start(box: dict, now: float) -> float | None:
+    """Speech that starts while Ara is audible, or just after, may be her own voice: never consent."""
+
+    if now <= float(box.get("playback_until") or 0.0) + consent.ECHO_TAIL_S:
+        return None
+    return now
+
+
+def arm_after_readback(box: dict | None, now: float) -> None:
+    """The response that spoke the read-back has finished; the answer window opens after its audio."""
+
+    pending = box.get("consent") if box is not None else None
+    if pending is not None and not pending.armed:
+        pending.arm(float(box.get("playback_until") or 0.0), now)
 
 
 async def _finish_tools(ws, calls: list[dict], box: dict[str, str] | None = None) -> None:
@@ -915,7 +937,7 @@ async def _pump(
         }:
             activity["at"] = time.monotonic()
         if kind == "input_audio_buffer.speech_started" and box is not None and event.get("item_id"):
-            box.setdefault("speech_starts", {})[str(event["item_id"])] = time.monotonic()
+            box.setdefault("speech_starts", {})[str(event["item_id"])] = eligible_start(box, time.monotonic())
         line = note_transcript(event)
         if line:
             print(line, flush=True)
@@ -935,6 +957,8 @@ async def _pump(
             except (ValueError, TypeError):
                 pcm = b""
             if pcm:
+                if box is not None:
+                    note_playback(box, len(pcm), time.monotonic())
                 if ear is not None:
                     ear.play(pcm)
                 if not saw["audio"]:
@@ -946,6 +970,8 @@ async def _pump(
         if kind in {"input_audio_buffer.speech_started", "response.cancelled"} and ear is not None:
             ear.clear_play()
             saw["speech"] = True
+            if box is not None:
+                box["playback_until"] = time.monotonic()
         hit = server_tool_hit(event)
         if hit:
             counts[hit] = counts.get(hit, 0) + 1
@@ -967,6 +993,7 @@ async def _pump(
             saw["done"] = False
         elif kind == "response.done":
             saw["done"] = True
+            arm_after_readback(box, time.monotonic())
 
 
 async def _send_mic(ws, ear: Ear, closed: asyncio.Event) -> None:
