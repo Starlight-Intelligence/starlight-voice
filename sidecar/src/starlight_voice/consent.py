@@ -33,14 +33,32 @@ _CONFIRMING = frozenset(
     "close keep review hand off handoff confirm confirmed that one this number "
     "ja jawohl genau bitte klopt doe maar prima mach es".split()
 )
-_WORDS = re.compile(r"[a-z0-9']+")
+_WORDS = re.compile(r"[^\W_]+(?:'[^\W_]+)?")
 
 
 def _words(line: str) -> list[str]:
     return _WORDS.findall(str(line).lower())
 
 
-def verdict(line: str) -> str | None:
+# An action word in an answer has to name the action that was read back. "Yes, keep 5" is not a yes
+# to "close 4": it is a different instruction, so it settles nothing and is treated as a no.
+_ACTION_WORDS = {
+    "close": "close", "keep": "keep", "review": "review", "handoff": "handoff", "hand": "handoff",
+}
+# The read-back itself may be spoken in German or Dutch; these stems name the same actions there.
+_SPOKEN_ACTION = {
+    "close": ("clos", "schlie", "schliess", "sluit"),
+    "keep": ("keep", "behalt", "behält", "houd"),
+    "review": ("review", "prüf", "pruef", "beoordeel"),
+    "handoff": ("hand", "übergeb", "uebergeb", "overdra"),
+}
+
+
+def _numbers(text: str) -> set[str]:
+    return set(re.findall(r"\d+", str(text)))
+
+
+def verdict(line: str, *, action: str = "", allowed_numbers: frozenset[str] | set[str] = frozenset()) -> str | None:
     words = _words(line)
     if not words:
         return None
@@ -49,10 +67,36 @@ def verdict(line: str) -> str | None:
         return "no"
     if len(words) > MAX_ANSWER_WORDS:
         return None
+    named = {_ACTION_WORDS[w] for w in words if w in _ACTION_WORDS}
+    if named - {action}:
+        return "no"
+    if any(w.isdigit() and w not in allowed_numbers for w in words):
+        return "no"
     opens = any(text == opener or text.startswith(opener + " ") for opener in _OPENERS)
     if opens and all(word in _CONFIRMING or word.isdigit() for word in words):
         return "yes"
     return None
+
+
+def heard_readback(pending: "Pending", said: str) -> bool:
+    """Did Ara's spoken words carry this read-back? Every number in it, and its action, must be heard.
+
+    The model chooses what to say, so a finished response with audio proves nothing by itself: it may
+    have asked an unrelated question that Frank then answers with "yes".
+    """
+
+    spoken = _words(said)
+    if not spoken:
+        return False
+    if pending.kind == "triage":
+        if not pending.number or pending.number not in _numbers(said):
+            return False
+        stems = _SPOKEN_ACTION.get(pending.action, (pending.action,))
+        return any(word.startswith(stems) for word in spoken)
+    if not _numbers(pending.readback) <= _numbers(said):
+        return False
+    content = {w for w in _words(pending.readback) if len(w) > 3 and not w.isdigit()}
+    return not content or len(content & set(spoken)) / len(content) >= 0.5
 
 
 @dataclass
@@ -62,6 +106,7 @@ class Pending:
     token: str = ""
     ref: str = ""
     action: str = ""
+    number: str = ""  # the PR number the read-back names
     proposal: str = ""
     armed: bool = False
     at: float = 0.0  # when the read-back finished playing, plus the echo tail
@@ -95,4 +140,6 @@ def answer(pending: Pending | None, line: str, *, spoke_at: float | None, now: f
         return "expired"
     if not pending.armed or spoke_at is None or spoke_at <= pending.at:
         return None
-    return verdict(line)
+    action = pending.action or ("handoff" if pending.kind == "handoff" else "")
+    allowed = {pending.ref, pending.number} - {""} if pending.kind == "triage" else _numbers(pending.readback)
+    return verdict(line, action=action, allowed_numbers=allowed)

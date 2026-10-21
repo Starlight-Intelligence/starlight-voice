@@ -11,7 +11,7 @@ from starlight_voice.config import scrubbed_env
 
 def test_only_a_short_explicit_answer_counts() -> None:
     assert consent.verdict("yes") == "yes"
-    assert consent.verdict("yes, close it") == "yes"
+    assert consent.verdict("yes, close it", action="close") == "yes"
     assert consent.verdict("ja genau") == "yes"
     assert consent.verdict("doe maar") == "yes"
     assert consent.verdict("go ahead") == "yes"
@@ -21,7 +21,7 @@ def test_only_a_short_explicit_answer_counts() -> None:
     assert consent.verdict("Confirm?") is None, "the read-back's own last word is not a yes"
     assert consent.verdict("okay where is my phone") is None
     assert consent.verdict("yes later") is None
-    assert consent.verdict("yes close number 4") == "yes"
+    assert consent.verdict("yes close number 4", action="close", allowed_numbers={"4"}) == "yes"
     assert consent.verdict("ja bitte") == "yes"
 
 
@@ -59,8 +59,12 @@ def test_speech_during_aras_audio_is_marked_ineligible() -> None:
     assert x_voice.eligible_start(box, 104.0) == 104.0
 
 
+def _close_451() -> consent.Pending:
+    return consent.Pending(kind="triage", readback='Close demo 451, "Fix 2 bugs". Confirm?', ref="4", action="close", number="451")
+
+
 def test_the_answer_window_arms_after_the_read_back_response() -> None:
-    box: dict = {"consent": consent.Pending(kind="triage", readback="r"), "playback_until": 50.0, "response_audio": 9600}
+    box: dict = {"consent": _close_451(), "playback_until": 50.0, "response_audio": 9600, "response_said": "Close demo 451, fix two bugs. Confirm?"}
     x_voice.arm_after_readback(box, now=48.0, event={"type": "response.done", "response": {"status": "completed"}})
     assert box["consent"].armed is True
     assert box["consent"].at == pytest.approx(50.0 + consent.ECHO_TAIL_S)
@@ -240,3 +244,58 @@ def test_a_failed_voice_key_lookup_is_asked_again(monkeypatch) -> None:
     monkeypatch.setattr(x_voice, "_infisical_stdout", lambda: next(answers))
     assert x_voice.key_from_infisical() is None
     assert x_voice.key_from_infisical() == "xai-test-not-real-key"
+
+
+def test_an_answer_that_names_another_action_or_item_is_a_no() -> None:
+    pending = _close_451()
+    pending.arm(playback_until=0.0, now=0.0)
+    hear = lambda line: consent.answer(pending, line, spoke_at=pending.at + 1, now=pending.at + 2)
+    assert hear("yes keep number 5") == "no", "Codex P1: a different instruction is not a yes"
+    assert hear("yes review") == "no"
+    assert hear("yes 7") == "no"
+    assert hear("yes close") == "yes"
+    assert hear("yes 451") == "yes"
+    assert hear("yes number 4") == "yes", "the queue ref Frank heard earlier still names it"
+
+
+def test_audio_that_did_not_speak_the_read_back_does_not_arm() -> None:
+    done = {"type": "response.done", "response": {"status": "completed"}}
+    box: dict = {"consent": _close_451(), "playback_until": 50.0, "response_audio": 9600, "response_said": "Do you want me to check the weather?"}
+    x_voice.arm_after_readback(box, now=48.0, event=done)
+    assert box["consent"].armed is False, "Codex P1: an unrelated question must not open the answer window"
+    box["response_said"] = "Close demo 4?"
+    x_voice.arm_after_readback(box, now=48.0, event=done)
+    assert box["consent"].armed is False, "the queue ref alone is not the PR the read-back names"
+    box["response_said"] = "Ich schließe demo 451. Bestätigst du?"
+    x_voice.arm_after_readback(box, now=48.0, event=done)
+    assert box["consent"].armed is True, "a German read-back still counts"
+
+
+def test_the_bridge_hands_over_the_pr_number_from_the_key(monkeypatch, tmp_path) -> None:
+    script = tmp_path / "bin" / "triage.mjs"
+    script.parent.mkdir()
+    script.write_text("")
+    monkeypatch.setenv("STARLIGHT_TRIAGE_BIN", str(script))
+    out = json.dumps({"pending": True, "readback": "Close demo 451. Confirm?", "token": "abc123", "key": "frankxai/demo#451@" + "a" * 40})
+    asked = triage_bridge.ask("4", "close", lambda cmd: types.SimpleNamespace(returncode=0, stdout=out))
+    assert asked["number"] == "451"
+    box: dict = {}
+    x_voice.open_triage_consent(box, asked)
+    assert box["consent"].number == "451"
+
+
+def test_settling_consent_logs_with_the_real_event_writer(monkeypatch, tmp_path) -> None:
+    """Codex P1: append_event took kind twice and crashed the pump after the decision was written."""
+    from starlight_voice import session_store
+
+    monkeypatch.setattr(session_store, "sessions_path", lambda: tmp_path / "sessions.jsonl")
+    monkeypatch.setattr(x_voice.triage_bridge, "record", lambda *a: {"ok": True, "spoken": "Done."})
+    monkeypatch.setattr(x_voice, "_touch_live", lambda *a, **k: None)
+    now = time.monotonic()
+    pending = _armed(now)
+    pending.ref, pending.action, pending.token = "4", "close", "abc123"
+    ws = _Socket()
+    asyncio.run(x_voice._hear(ws, {"consent": pending, "session_id": "s1"}, "yes", spoke_at=now + 0.5))
+    assert ws.sent[1] == {"type": "response.create"}
+    logged = [json.loads(line) for line in (tmp_path / "sessions.jsonl").read_text().splitlines()]
+    assert logged[-1]["kind"] == "consent" and logged[-1]["consent_kind"] == "triage"

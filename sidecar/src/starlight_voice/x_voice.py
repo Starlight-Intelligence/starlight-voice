@@ -764,7 +764,7 @@ def open_triage_consent(box: dict | None, asked: dict) -> dict[str, object]:
         return {key: value for key, value in asked.items() if key != "token"}
     if box is not None:
         box["consent"] = consent.Pending(
-            kind="triage", ref=str(asked["ref"]), action=str(asked["action"]),
+            kind="triage", ref=str(asked["ref"]), action=str(asked["action"]), number=str(asked.get("number") or ""),
             token=str(asked["token"]), readback=str(asked["readback"]),
         )
     return {
@@ -807,7 +807,7 @@ async def _hear(ws, box: dict | None, text: str, spoke_at: float | None) -> None
         return
     note = await asyncio.to_thread(settle_consent, box, pending, answer)
     print(note, flush=True)
-    append_event("consent", session_id=box.get("session_id", ""), kind=pending.kind, answer=answer)
+    append_event("consent", session_id=box.get("session_id", ""), consent_kind=pending.kind, answer=answer)
     _touch_live(box, line=note[:180])
     await ws.send(json.dumps(operator_note(note)))
     await ws.send(json.dumps({"type": "response.create"}))
@@ -855,6 +855,9 @@ def arm_after_readback(box: dict | None, now: float, event: dict | None = None) 
         box["consent"] = None
         return
     if int(box.get("response_audio") or 0) <= 0:
+        return
+    # A response that played audio but did not speak this read-back is not the read-back.
+    if not consent.heard_readback(pending, str(box.get("response_said") or "")):
         return
     pending.arm(float(box.get("playback_until") or 0.0), now)
 
@@ -951,6 +954,7 @@ async def _pump(
             activity["at"] = time.monotonic()
         if kind == "response.created" and box is not None:
             box["response_audio"] = 0
+            box["response_said"] = ""
         if kind == "response.cancelled" and box is not None and box.get("consent") is not None and not box["consent"].armed:
             box["consent"] = None
         if kind == "input_audio_buffer.speech_started" and box is not None and event.get("item_id"):
@@ -967,6 +971,8 @@ async def _pump(
                 _touch_live(box, line=short, conversation_id=box.get("conversation_id", ""))
                 if line.startswith("you: "):
                     await _hear(ws, box, line[5:], speech_start(box, event))
+                elif line.startswith("starlight: "):
+                    box["response_said"] = f"{box.get('response_said') or ''} {line[11:]}".strip()
         delta = audio_delta(event)
         if delta:
             try:
