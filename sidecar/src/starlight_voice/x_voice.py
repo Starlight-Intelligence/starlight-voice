@@ -1246,12 +1246,11 @@ async def _run_socket(
 
 
 async def run_text(text: str) -> int:
-    token = resolve_token()
-    source = str(token_status()["source"])
+    token, source = resolve_credential()
     if not token:
         print("No xAI key. The socket stays closed.", flush=True)
         return 2
-    gate = open_spend_gate()
+    gate = open_spend_gate(source)
     if not gate["ok"]:
         print(gate["spoken"], flush=True)
         return 2
