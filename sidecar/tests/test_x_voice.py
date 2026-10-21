@@ -341,6 +341,8 @@ def test_server_limit_refuses_when_unread_or_spent(monkeypatch) -> None:
         assert path.endswith("/prepaid/balance")
         return {"total": {"val": "-1000"}}
 
+    assert server_spend_gate(prepaid)["why"] == "xai-prepaid-unbounded", "Codex P2: auto top-up can refill a balance"
+    monkeypatch.setenv("STARLIGHT_XVOICE_PREPAID_BOUNDED", "1")
     assert server_spend_gate(prepaid)["why"] == "xai-prepaid"
 
     def prepaid_empty(path: str) -> dict:

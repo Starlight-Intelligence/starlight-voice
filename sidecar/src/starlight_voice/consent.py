@@ -78,6 +78,12 @@ def verdict(line: str, *, action: str = "", allowed_numbers: frozenset[str] | se
     return None
 
 
+def spoke_canonical(pending: "Pending", said: str) -> bool:
+    """Ara said the listener's read-back sentence word for word, so Frank heard exactly that decision."""
+
+    return bool(pending.canonical) and _words(said) == _words(pending.canonical)
+
+
 def heard_readback(pending: "Pending", said: str) -> bool:
     """Did Ara's spoken words carry this read-back? Every number in it, and its action, must be heard.
 
@@ -107,6 +113,13 @@ class Pending:
     ref: str = ""
     action: str = ""
     number: str = ""  # the PR number the read-back names
+    # The exact sentence the listener asks Ara to say. Only a response the listener requested, tagged
+    # with this nonce and spoken word for word, arms the consent.
+    canonical: str = ""
+    nonce: str = ""
+    requested: bool = False
+    # The first utterance Frank starts after arming. It alone decides: yes, no, or anything else drops it.
+    answer_item: str = ""
     proposal: str = ""
     armed: bool = False
     at: float = 0.0  # when the read-back finished playing, plus the echo tail
@@ -127,11 +140,15 @@ class Pending:
         return clock - start > WINDOW_S
 
 
-def answer(pending: Pending | None, line: str, *, spoke_at: float | None, now: float | None = None) -> str | None:
-    """'yes' or 'no' when this transcript settles the pending consent, 'expired', or None to keep waiting.
+def answer(
+    pending: Pending | None, line: str, *, spoke_at: float | None, item: str = "", now: float | None = None,
+) -> str | None:
+    """'yes', 'no', 'dropped' or 'expired' when this transcript settles the pending consent; None to keep waiting.
 
-    ``spoke_at`` is when Frank began the utterance, or None when it began during Ara's playback.
-    Speech that began before the read-back finished never answers it.
+    ``spoke_at`` is when Frank began the utterance by the microphone's clock, or None when that is
+    unknown or fell inside Ara's playback. Speech that began before the read-back finished never
+    answers it. The first utterance after arming decides: anything that is not a clear yes or no
+    drops the consent, so a "yes" to some later question can never reach an old decision.
     """
 
     if pending is None:
@@ -140,6 +157,8 @@ def answer(pending: Pending | None, line: str, *, spoke_at: float | None, now: f
         return "expired"
     if not pending.armed or spoke_at is None or spoke_at <= pending.at:
         return None
+    if pending.answer_item and item and item != pending.answer_item:
+        return None
     action = pending.action or ("handoff" if pending.kind == "handoff" else "")
     allowed = {pending.ref, pending.number} - {""} if pending.kind == "triage" else _numbers(pending.readback)
-    return verdict(line, action=action, allowed_numbers=allowed)
+    return verdict(line, action=action, allowed_numbers=allowed) or "dropped"

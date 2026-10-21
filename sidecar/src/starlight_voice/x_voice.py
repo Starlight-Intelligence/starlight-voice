@@ -757,19 +757,52 @@ def confirm_heard(box: dict | None, proposal: str) -> dict[str, object]:
     }
 
 
+_SPOKEN_VERB = {"close": "Close", "keep": "Keep", "review": "Send for review", "handoff": "Hand back to its agent"}
+
+
+def readback_sentence(asked: dict) -> str:
+    """The one sentence Frank must hear before a yes counts. The listener writes it, never the model."""
+
+    target = f"{asked.get('repo') or 'this repository'} pull request {asked.get('number') or asked.get('ref')}"
+    return f"{_SPOKEN_VERB.get(str(asked.get('action')), 'Decide')} {target}. Say yes to confirm, or no."
+
+
 def open_triage_consent(box: dict | None, asked: dict) -> dict[str, object]:
-    """Keep the token with the listener and give the model only the words to read back."""
+    """Keep the token with the listener; the listener, not the model, has the decision read back."""
 
     if not asked.get("ok"):
         return {key: value for key, value in asked.items() if key != "token"}
+    if not asked.get("number"):
+        return {"ok": False, "started": False, "spoken": "I could not tell which pull request that is, so nothing was asked."}
     if box is not None:
         box["consent"] = consent.Pending(
-            kind="triage", ref=str(asked["ref"]), action=str(asked["action"]), number=str(asked.get("number") or ""),
-            token=str(asked["token"]), readback=str(asked["readback"]),
+            kind="triage", ref=str(asked["ref"]), action=str(asked["action"]), number=str(asked["number"]),
+            token=str(asked["token"]), readback=str(asked["readback"]), canonical=readback_sentence(asked),
         )
     return {
         "ok": True, "started": False, "readback": asked["readback"],
-        "spoken": f"{asked['readback']} Wait for Frank's answer; it is heard directly.",
+        "spoken": "The listener will read this decision back to Frank itself. Say nothing about it; wait for his answer.",
+    }
+
+
+def readback_request(box: dict | None) -> dict[str, object]:
+    """The next response: the scripted read-back when a consent is waiting for one, else an ordinary turn.
+
+    The nonce rides in the response metadata, which xAI echoes on response.done and leaves null on
+    responses it starts by itself, so only this response can arm the consent.
+    """
+
+    pending = box.get("consent") if box is not None else None
+    if pending is None or pending.armed or pending.requested or not pending.canonical:
+        return {"type": "response.create"}
+    pending.nonce = os.urandom(6).hex()
+    pending.requested = True
+    return {
+        "type": "response.create",
+        "response": {
+            "instructions": f"Say exactly this sentence, word for word, and nothing else: {pending.canonical}",
+            "metadata": {"starlight_readback": pending.nonce},
+        },
     }
 
 
@@ -793,19 +826,22 @@ def settle_consent(box: dict, pending: consent.Pending, answer: str) -> str:
     return str(triage_bridge.record(pending.ref, pending.action, pending.token).get("spoken") or "Not recorded.")
 
 
-async def _hear(ws, box: dict | None, text: str, spoke_at: float | None) -> None:
+async def _hear(ws, box: dict | None, text: str, spoke_at: float | None, item: str = "") -> None:
     """Frank's own transcript answers a pending read-back. Nothing the model says can do this."""
 
     if box is None:
         return
     pending = box.get("consent")
-    answer = consent.answer(pending, text, spoke_at=spoke_at)
+    answer = consent.answer(pending, text, spoke_at=spoke_at, item=item)
     if answer is None:
         return
     box["consent"] = None
     if answer == "expired":
         return
-    note = await asyncio.to_thread(settle_consent, box, pending, answer)
+    if answer == "dropped":
+        note = "Frank said something other than yes or no, so the pending decision was dropped. Nothing was recorded."
+    else:
+        note = await asyncio.to_thread(settle_consent, box, pending, answer)
     print(note, flush=True)
     append_event("consent", session_id=box.get("session_id", ""), consent_kind=pending.kind, answer=answer)
     _touch_live(box, line=note[:180])
@@ -831,12 +867,37 @@ def note_playback(box: dict, pcm_bytes: int, now: float) -> None:
     box["response_audio"] = int(box.get("response_audio") or 0) + pcm_bytes
 
 
-def eligible_start(box: dict, now: float) -> float | None:
-    """Speech that starts while Ara is audible, or just after, may be her own voice: never consent."""
+def eligible_start(box: dict, captured: float | None) -> float | None:
+    """Speech captured while Ara is audible, or just after, may be her own voice: never consent."""
 
-    if now <= float(box.get("playback_until") or 0.0) + consent.ECHO_TAIL_S:
+    if captured is None or captured <= float(box.get("playback_until") or 0.0) + consent.ECHO_TAIL_S:
         return None
-    return now
+    return captured
+
+
+def note_mic(box: dict, pcm_bytes: int, sent_at: float) -> None:
+    """Map the input buffer's millisecond offsets to the local clock, one entry per sent chunk."""
+
+    box["mic_ms"] = float(box.get("mic_ms") or 0.0) + pcm_bytes / (SAMPLE_RATE * 2) * 1000
+    chunks = box.setdefault("mic_chunks", [])
+    chunks.append((box["mic_ms"], sent_at))
+    if len(chunks) > 4000:
+        del chunks[:1000]
+
+
+def capture_time(box: dict, audio_start_ms: object) -> float | None:
+    """When the microphone captured the audio at this buffer offset; None when that cannot be known.
+
+    A VAD event can arrive late, so its arrival time says nothing about who was speaking. Without an
+    offset, or one outside what this session sent, the utterance is treated as not Frank's answer.
+    """
+
+    if not isinstance(audio_start_ms, (int, float)) or isinstance(audio_start_ms, bool):
+        return None
+    for end_ms, sent_at in box.get("mic_chunks") or []:
+        if end_ms >= audio_start_ms:
+            return sent_at - (end_ms - float(audio_start_ms)) / 1000
+    return None
 
 
 def arm_after_readback(box: dict | None, now: float, event: dict | None = None) -> None:
@@ -850,14 +911,16 @@ def arm_after_readback(box: dict | None, now: float, event: dict | None = None) 
     if pending is None or pending.armed:
         return
     response = (event or {}).get("response") if isinstance((event or {}).get("response"), dict) else {}
+    metadata = response.get("metadata") if isinstance(response.get("metadata"), dict) else {}
+    # Only the response the listener asked for carries its nonce. Anything else the model says, however
+    # it is worded, can neither arm nor drop the consent.
+    if not pending.nonce or metadata.get("starlight_readback") != pending.nonce:
+        return
     status = str(response.get("status") or "completed")
-    if status != "completed":
+    said = str(box.get("response_said") or "")
+    if status != "completed" or int(box.get("response_audio") or 0) <= 0 or not consent.spoke_canonical(pending, said):
+        # Frank did not hear the read-back exactly as written, so there is nothing he could say yes to.
         box["consent"] = None
-        return
-    if int(box.get("response_audio") or 0) <= 0:
-        return
-    # A response that played audio but did not speak this read-back is not the read-back.
-    if not consent.heard_readback(pending, str(box.get("response_said") or "")):
         return
     pending.arm(float(box.get("playback_until") or 0.0), now)
 
@@ -876,7 +939,11 @@ async def _finish_tools(ws, calls: list[dict], box: dict[str, str] | None = None
             result = handle_meta_harness(arguments)
             _touch_live(box, **face_fields(arguments, result))
             if box is not None and result.get("proposal"):
-                box["consent"] = consent.Pending(kind="handoff", proposal=str(result["proposal"]), readback=str(result.get("spoken") or ""))
+                spoken = str(result.get("spoken") or "")
+                box["consent"] = consent.Pending(
+                    kind="handoff", proposal=str(result["proposal"]), readback=spoken,
+                    canonical=f"{spoken[:280].rstrip('. ')}. Say yes to start it, or no.",
+                )
         elif name == "estate_lookup":
             result = estate_lookup(str(arguments.get("query") or ""))
         elif name == "confirm_handoff":
@@ -899,7 +966,7 @@ async def _finish_tools(ws, calls: list[dict], box: dict[str, str] | None = None
         if isinstance(spoken, str):
             print(spoken, flush=True)
         await ws.send(json.dumps(function_output(call_id, result)))
-    await ws.send(json.dumps({"type": "response.create"}))
+    await ws.send(json.dumps(readback_request(box)))
 
 
 def _touch_live(box: dict[str, str] | None, **fields: object) -> None:
@@ -958,7 +1025,12 @@ async def _pump(
         if kind == "response.cancelled" and box is not None and box.get("consent") is not None and not box["consent"].armed:
             box["consent"] = None
         if kind == "input_audio_buffer.speech_started" and box is not None and event.get("item_id"):
-            box.setdefault("speech_starts", {})[str(event["item_id"])] = eligible_start(box, time.monotonic())
+            item = str(event["item_id"])
+            start = eligible_start(box, capture_time(box, event.get("audio_start_ms")))
+            box.setdefault("speech_starts", {})[item] = start
+            waiting = box.get("consent")
+            if waiting is not None and waiting.armed and not waiting.answer_item and start is not None and start > waiting.at:
+                waiting.answer_item = item
         line = note_transcript(event)
         if line:
             print(line, flush=True)
@@ -970,7 +1042,7 @@ async def _pump(
                 append_event("transcript", session_id=box.get("session_id", ""), line=short)
                 _touch_live(box, line=short, conversation_id=box.get("conversation_id", ""))
                 if line.startswith("you: "):
-                    await _hear(ws, box, line[5:], speech_start(box, event))
+                    await _hear(ws, box, line[5:], speech_start(box, event), str(event.get("item_id") or ""))
                 elif line.startswith("starlight: "):
                     box["response_said"] = f"{box.get('response_said') or ''} {line[11:]}".strip()
         delta = audio_delta(event)
@@ -1019,7 +1091,7 @@ async def _pump(
             arm_after_readback(box, time.monotonic(), event)
 
 
-async def _send_mic(ws, ear: Ear, closed: asyncio.Event) -> None:
+async def _send_mic(ws, ear: Ear, closed: asyncio.Event, box: dict | None = None) -> None:
     ear.session_open = True
     try:
         while not closed.is_set():
@@ -1031,6 +1103,8 @@ async def _send_mic(ws, ear: Ear, closed: asyncio.Event) -> None:
                 break
             payload = base64.b64encode(pcm).decode("ascii")
             await ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": payload}))
+            if box is not None:
+                note_mic(box, len(pcm), time.monotonic())
     finally:
         ear.session_open = False
 
@@ -1088,7 +1162,7 @@ async def _run_socket(
                 await ws.send(json.dumps({"type": "response.create"}))
             tasks = [asyncio.create_task(_pump(ws, ear, closed=closed, saw=saw, activity=activity, box=box, meter=meter))]
             if ear is not None and not text:
-                tasks.append(asyncio.create_task(_send_mic(ws, ear, closed)))
+                tasks.append(asyncio.create_task(_send_mic(ws, ear, closed, box)))
             if text:
 
                 async def _done_watch() -> None:

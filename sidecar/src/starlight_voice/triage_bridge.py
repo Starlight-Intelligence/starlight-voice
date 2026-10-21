@@ -74,10 +74,10 @@ def ask(ref: str, action: str, runner=None) -> dict[str, object]:
     if not out.get("pending"):
         return {"ok": False, "started": False, "spoken": str(out.get("error") or "I could not read that item back.")[:200]}
     # The PR number is what Ara must say aloud for the read-back to count (consent.heard_readback).
-    number = re.search(r"#(\d+)@", str(out.get("key") or ""))
+    target = re.search(r"^[\w.-]+/([\w.-]+)#(\d+)@", str(out.get("key") or ""))
     return {
         "ok": True, "started": False, "readback": str(out["readback"]), "token": str(out["token"]),
-        "ref": ref, "action": action, "number": number.group(1) if number else "",
+        "ref": ref, "action": action, "repo": target.group(1) if target else "", "number": target.group(2) if target else "",
     }
 
 

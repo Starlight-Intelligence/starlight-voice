@@ -59,28 +59,38 @@ def test_speech_during_aras_audio_is_marked_ineligible() -> None:
     assert x_voice.eligible_start(box, 104.0) == 104.0
 
 
+CANON = "Close demo pull request 451. Say yes to confirm, or no."
+
+
 def _close_451() -> consent.Pending:
-    return consent.Pending(kind="triage", readback='Close demo 451, "Fix 2 bugs". Confirm?', ref="4", action="close", number="451")
+    return consent.Pending(
+        kind="triage", readback='Close demo 451, "Fix 2 bugs". Confirm?', ref="4", action="close", number="451",
+        canonical=CANON, nonce="n1", requested=True,
+    )
+
+
+def _done(nonce: str | None = "n1", status: str = "completed") -> dict:
+    return {"type": "response.done", "response": {"status": status, "metadata": {"starlight_readback": nonce} if nonce else None}}
 
 
 def test_the_answer_window_arms_after_the_read_back_response() -> None:
-    box: dict = {"consent": _close_451(), "playback_until": 50.0, "response_audio": 9600, "response_said": "Close demo 451, fix two bugs. Confirm?"}
-    x_voice.arm_after_readback(box, now=48.0, event={"type": "response.done", "response": {"status": "completed"}})
+    box: dict = {"consent": _close_451(), "playback_until": 50.0, "response_audio": 9600, "response_said": CANON}
+    x_voice.arm_after_readback(box, now=48.0, event=_done())
     assert box["consent"].armed is True
     assert box["consent"].at == pytest.approx(50.0 + consent.ECHO_TAIL_S)
     x_voice.arm_after_readback(box, now=60.0)
     assert box["consent"].at == pytest.approx(50.0 + consent.ECHO_TAIL_S), "arming happens once"
 
 
-def test_a_response_with_no_audio_does_not_arm() -> None:
-    box: dict = {"consent": consent.Pending(kind="triage", readback="r"), "playback_until": 0.0, "response_audio": 0}
-    x_voice.arm_after_readback(box, now=10.0, event={"type": "response.done", "response": {"status": "completed"}})
-    assert box["consent"].armed is False
+def test_a_read_back_with_no_audio_drops_the_consent() -> None:
+    box: dict = {"consent": _close_451(), "playback_until": 0.0, "response_audio": 0, "response_said": CANON}
+    x_voice.arm_after_readback(box, now=10.0, event=_done())
+    assert box["consent"] is None
 
 
 def test_a_cancelled_read_back_drops_the_consent() -> None:
-    box: dict = {"consent": consent.Pending(kind="triage", readback="r"), "response_audio": 4800}
-    x_voice.arm_after_readback(box, now=10.0, event={"type": "response.done", "response": {"status": "cancelled"}})
+    box: dict = {"consent": _close_451(), "response_audio": 4800, "response_said": CANON}
+    x_voice.arm_after_readback(box, now=10.0, event=_done(status="cancelled"))
     assert box["consent"] is None
 
 
@@ -92,9 +102,10 @@ def test_cards_are_looked_for_in_the_order_they_move() -> None:
 
 def test_the_model_never_receives_the_triage_token() -> None:
     box: dict = {}
-    asked = {"ok": True, "started": False, "readback": "Close demo 4. Confirm?", "token": "abc123", "ref": "4", "action": "close"}
+    asked = {"ok": True, "started": False, "readback": "Close demo 4. Confirm?", "token": "abc123", "ref": "4", "action": "close", "repo": "demo", "number": "451"}
     out = x_voice.open_triage_consent(box, asked)
     assert "abc123" not in json.dumps(out)
+    assert box["consent"].canonical == CANON
     assert box["consent"].token == "abc123"
     assert box["consent"].armed is False
     failed = x_voice.open_triage_consent(box, {"ok": False, "spoken": "nope", "token": "leak"})
@@ -258,17 +269,15 @@ def test_an_answer_that_names_another_action_or_item_is_a_no() -> None:
     assert hear("yes number 4") == "yes", "the queue ref Frank heard earlier still names it"
 
 
-def test_audio_that_did_not_speak_the_read_back_does_not_arm() -> None:
-    done = {"type": "response.done", "response": {"status": "completed"}}
-    box: dict = {"consent": _close_451(), "playback_until": 50.0, "response_audio": 9600, "response_said": "Do you want me to check the weather?"}
-    x_voice.arm_after_readback(box, now=48.0, event=done)
-    assert box["consent"].armed is False, "Codex P1: an unrelated question must not open the answer window"
-    box["response_said"] = "Close demo 4?"
-    x_voice.arm_after_readback(box, now=48.0, event=done)
-    assert box["consent"].armed is False, "the queue ref alone is not the PR the read-back names"
-    box["response_said"] = "Ich schließe demo 451. Bestätigst du?"
-    x_voice.arm_after_readback(box, now=48.0, event=done)
-    assert box["consent"].armed is True, "a German read-back still counts"
+def test_only_the_scripted_read_back_spoken_word_for_word_arms() -> None:
+    box: dict = {"consent": _close_451(), "playback_until": 50.0, "response_audio": 9600, "response_said": CANON}
+    x_voice.arm_after_readback(box, now=48.0, event=_done(nonce=None))
+    assert box["consent"].armed is False, "a response the listener did not request cannot arm, even with the right words"
+    x_voice.arm_after_readback(box, now=48.0, event=_done(nonce="other"))
+    assert box["consent"].armed is False
+    box["response_said"] = "Do not close demo pull request 451. Shall I keep it?"
+    x_voice.arm_after_readback(box, now=48.0, event=_done())
+    assert box["consent"] is None, "Codex round 2 P1: a negated or reworded read-back drops the decision"
 
 
 def test_the_bridge_hands_over_the_pr_number_from_the_key(monkeypatch, tmp_path) -> None:
@@ -299,3 +308,46 @@ def test_settling_consent_logs_with_the_real_event_writer(monkeypatch, tmp_path)
     assert ws.sent[1] == {"type": "response.create"}
     logged = [json.loads(line) for line in (tmp_path / "sessions.jsonl").read_text().splitlines()]
     assert logged[-1]["kind"] == "consent" and logged[-1]["consent_kind"] == "triage"
+
+
+def test_the_listener_asks_for_the_read_back_itself() -> None:
+    box: dict = {"consent": consent.Pending(kind="triage", readback="r", canonical=CANON)}
+    request = x_voice.readback_request(box)
+    assert request["response"]["instructions"].endswith(CANON)
+    assert request["response"]["metadata"]["starlight_readback"] == box["consent"].nonce
+    assert x_voice.readback_request(box) == {"type": "response.create"}, "asked once"
+    assert x_voice.readback_request({}) == {"type": "response.create"}
+
+
+def test_the_first_utterance_after_arming_decides_and_a_change_of_topic_drops_it() -> None:
+    pending = _close_451()
+    pending.arm(playback_until=0.0, now=0.0)
+    pending.answer_item = "item_7"
+    t = pending.at + 1
+    assert consent.answer(pending, "yes", spoke_at=t, item="item_9", now=t) is None, "not the utterance that answers"
+    assert consent.answer(pending, "what's the weather like", spoke_at=t, item="item_7", now=t) == "dropped"
+
+
+def test_a_dropped_consent_records_nothing(monkeypatch) -> None:
+    monkeypatch.setattr(x_voice.triage_bridge, "record", lambda *a: pytest.fail("a change of topic is not a yes"))
+    _quiet(monkeypatch)
+    now = time.monotonic()
+    pending = _armed(now)
+    box: dict = {"consent": pending}
+    ws = _Socket()
+    asyncio.run(x_voice._hear(ws, box, "tell me the weather", spoke_at=now + 0.5))
+    assert box["consent"] is None
+    assert "dropped" in ws.sent[0]["item"]["content"][0]["text"]
+
+
+def test_speech_timing_comes_from_the_microphone_clock_not_event_arrival() -> None:
+    box: dict = {}
+    for i in range(10):  # ten 100 ms chunks sent at t = 100.1 ... 101.0
+        x_voice.note_mic(box, pcm_bytes=4800, sent_at=100.1 + i * 0.1)
+    assert x_voice.capture_time(box, 250) == pytest.approx(100.25)
+    assert x_voice.capture_time(box, None) is None, "no offset, no claim about who spoke"
+    assert x_voice.capture_time(box, 5000) is None, "an offset this session never sent"
+    box["playback_until"] = 100.5
+    # A late event for audio captured during Ara's playback stays ineligible whenever it arrives.
+    assert x_voice.eligible_start(box, x_voice.capture_time(box, 600)) is None
+    assert x_voice.eligible_start(box, None) is None
