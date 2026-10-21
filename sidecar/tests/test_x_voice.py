@@ -683,3 +683,20 @@ def test_live_dispatch_table_answers_a_public_judgment() -> None:
     assert unknown["refuse"] is True
     assert unknown["data_class"] == "unknown"
     assert "command" not in unknown
+
+
+def test_the_gated_credential_is_the_one_that_opens(monkeypatch) -> None:
+    """Codex round 4 P1: a login that expires between the gate and the socket must not swap in a metered key."""
+    from starlight_voice import x_voice
+
+    monkeypatch.setattr(x_voice, "load_local_env", lambda: None)
+    monkeypatch.setattr(x_voice, "_api_preferred", lambda: False)
+    monkeypatch.setattr(x_voice, "token_from_grok_auth", lambda path: None)
+    monkeypatch.setattr(x_voice, "_env_api_key", lambda: "xai-test")
+    assert x_voice.resolve_credential() == ("xai-test", "api-key")
+    calls = []
+    monkeypatch.setattr(x_voice, "server_spend_gate", lambda: calls.append(1) or {"ok": False, "why": "x", "spoken": ""})
+    assert x_voice.open_spend_gate("api-key")["ok"] is False
+    assert calls == [1], "a metered key is always gated"
+    assert x_voice.open_spend_gate("grok-cli")["ok"] is True
+    assert calls == [1], "the account session skips the metered gate"

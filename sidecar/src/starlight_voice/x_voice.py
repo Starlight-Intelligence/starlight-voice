@@ -482,6 +482,27 @@ def resolve_token() -> str | None:
     return key_from_infisical()
 
 
+def resolve_credential() -> tuple[str | None, str]:
+    """The token and where it came from, read once together.
+
+    The spend gate and the socket must see the same credential: if the Grok login expired between
+    gating one source and opening with another, a metered key could open with no spend check.
+    """
+
+    load_local_env()
+    if not _api_preferred():
+        account = token_from_grok_auth(_grok_auth_path())
+        if account:
+            return account, "grok-cli"
+    env_key = _env_api_key()
+    if env_key:
+        return env_key, "api-key"
+    vault = key_from_infisical()
+    if vault:
+        return vault, "infisical"
+    return None, "missing"
+
+
 def server_tools_enabled(source: str) -> bool:
     return source in {"api-key", "infisical"}
 
@@ -513,10 +534,13 @@ def _module_present(name: str) -> bool:
     return True
 
 
-def open_spend_gate() -> dict[str, object]:
-    """The subscription session is not the metered key, so it skips the xAI limit."""
+def open_spend_gate(source: str | None = None) -> dict[str, object]:
+    """The subscription session is not the metered key, so it skips the xAI limit.
 
-    if token_status()["source"] == "grok-cli":
+    Pass the source of the credential that will actually open the socket.
+    """
+
+    if (source if source is not None else token_status()["source"]) == "grok-cli":
         return {"ok": True, "why": "grok-account", "spoken": ""}
     return server_spend_gate()
 
@@ -1331,7 +1355,11 @@ async def run_clap_loop() -> int:
             await ear.toggle.wait()
             ear.toggle.clear()
             ear.clear_play()
-            gate = open_spend_gate()
+            fresh, source = resolve_credential()
+            if not fresh:
+                print("No xAI credential is available. The socket stays closed.", flush=True)
+                continue
+            gate = open_spend_gate(source)
             if not gate["ok"]:
                 print(gate["spoken"], flush=True)
                 publish(
@@ -1375,10 +1403,8 @@ async def run_clap_loop() -> int:
                 continue
             ear.play(open_chime())
             print("open", flush=True)
-            fresh = resolve_token()
-            source = str(token_status()["source"])
-            if fresh:
-                token = fresh
+            # The credential gated above, not a fresh lookup: a lookup now could return a different one.
+            token = fresh
             memory, memory_label = recall_for_open()
             session = {
                 "phase": "open",
