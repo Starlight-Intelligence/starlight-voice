@@ -395,6 +395,15 @@ def server_spend_gate(get_json=None, secret=None) -> dict[str, object]:
             "xai-limit-unconfigured",
             "xAI spending limit is not configured. The socket stays closed.",
         )
+    # xAI spends prepaid credit before the postpaid limit applies, and auto top-up can refill it, so no
+    # API reading bounds spend unless top-up is off or capped. Only the console shows that; Frank
+    # states it once. This holds whatever the postpaid limit says.
+    if os.environ.get("STARLIGHT_XVOICE_PREPAID_BOUNDED") != "1":
+        return _gate_shut(
+            "xai-prepaid-unbounded",
+            "xAI auto top-up could refill prepaid credit. Check it is off or capped in the xAI console, "
+            "then set STARLIGHT_XVOICE_PREPAID_BOUNDED=1 in .env.local. The socket stays closed.",
+        )
     fetch = get_json or (lambda path: _management_get(path, key))
     team_q = quote(team, safe="")
     limit_path = f"/v1/billing/teams/{team_q}/postpaid/spending-limits"
@@ -433,14 +442,6 @@ def server_spend_gate(get_json=None, secret=None) -> dict[str, object]:
             return _gate_shut(
                 "xai-prepaid-empty",
                 "xAI prepaid balance is not available. The socket stays closed.",
-            )
-        # Prepaid credit is a ceiling only if auto top-up is off or capped, and xAI exposes that setting
-        # in the console alone. Frank states it once; without that, prepaid is not treated as a limit.
-        if os.environ.get("STARLIGHT_XVOICE_PREPAID_BOUNDED") != "1":
-            return _gate_shut(
-                "xai-prepaid-unbounded",
-                "xAI auto top-up could refill this balance. Check it is off or capped in the xAI console, "
-                "then set STARLIGHT_XVOICE_PREPAID_BOUNDED=1 in .env.local. The socket stays closed.",
             )
         return {"ok": True, "why": "xai-prepaid", "spoken": ""}
     invoice = preview.get("coreInvoice") if isinstance(preview.get("coreInvoice"), dict) else {}

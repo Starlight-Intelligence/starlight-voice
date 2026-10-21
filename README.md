@@ -50,7 +50,7 @@ Plan on $0.08 a minute while the socket is open. Vendor docs have also printed $
 
 An OpenRouter key can call Grok for text and for one-way speech. It does not open this realtime socket. `listen --check` will not become ready from that key. No flag changes that.
 
-The grok CLI session skips the spending-limit check and does not turn on server search. An `xai-` key stays closed until `XAI_MANAGEMENT_KEY` and `XAI_TEAM_ID` can read a postpaid limit that still has room, or prepaid credit when no postpaid limit is set. Prepaid counts only after you check that auto top-up is off or capped in the xAI console and set `STARLIGHT_XVOICE_PREPAID_BOUNDED=1` in `.env.local`. Both are read from the environment first, then from Infisical. Never commit either credential. Stop the listener when you are done.
+The grok CLI session skips the spending-limit check and does not turn on server search. An `xai-` key stays closed until `XAI_MANAGEMENT_KEY` and `XAI_TEAM_ID` can read a postpaid limit that still has room, or prepaid credit when no postpaid limit is set. Either way it also needs `STARLIGHT_XVOICE_PREPAID_BOUNDED=1` in `.env.local`, set after you check that prepaid auto top-up is off or capped in the xAI console, because the postpaid limit does not cover prepaid spend. Both are read from the environment first, then from Infisical. Never commit either credential. Stop the listener when you are done.
 
 When the Grok plan is spent but its sign-in is still valid, set `STARLIGHT_XVOICE_TOKEN=api` in `.env.local`. Ara then skips the account and uses the metered `xai-` key, with search on and the spending limit enforced.
 

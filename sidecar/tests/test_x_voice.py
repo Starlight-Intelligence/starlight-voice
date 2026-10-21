@@ -55,6 +55,11 @@ def _decision(primary: str = "claude-local", spawn: bool = True) -> str:
     })
 
 
+
+@pytest.fixture(autouse=True)
+def _prepaid_attested(monkeypatch):
+    monkeypatch.setenv("STARLIGHT_XVOICE_PREPAID_BOUNDED", "1")
+
 def test_session_update_pins_grok_voice_and_the_harness_tool(monkeypatch) -> None:
     monkeypatch.delenv("STARLIGHT_XVOICE_VOICE", raising=False)
     monkeypatch.delenv("STARLIGHT_XVOICE_REASONING", raising=False)
@@ -341,9 +346,11 @@ def test_server_limit_refuses_when_unread_or_spent(monkeypatch) -> None:
         assert path.endswith("/prepaid/balance")
         return {"total": {"val": "-1000"}}
 
-    assert server_spend_gate(prepaid)["why"] == "xai-prepaid-unbounded", "Codex P2: auto top-up can refill a balance"
-    monkeypatch.setenv("STARLIGHT_XVOICE_PREPAID_BOUNDED", "1")
     assert server_spend_gate(prepaid)["why"] == "xai-prepaid"
+    monkeypatch.delenv("STARLIGHT_XVOICE_PREPAID_BOUNDED")
+    assert server_spend_gate(prepaid)["why"] == "xai-prepaid-unbounded", "Codex P2: auto top-up can refill a balance"
+    assert server_spend_gate(open_room)["why"] == "xai-prepaid-unbounded", "Codex round 3 P2: a postpaid limit does not bound prepaid"
+    monkeypatch.setenv("STARLIGHT_XVOICE_PREPAID_BOUNDED", "1")
 
     def prepaid_empty(path: str) -> dict:
         if path.endswith("/spending-limits"):

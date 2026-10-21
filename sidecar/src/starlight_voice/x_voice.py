@@ -618,7 +618,8 @@ class Ear:
     def __init__(self) -> None:
         self.detector = ClapDetector(sample_rate=SAMPLE_RATE)
         self.toggle = asyncio.Event()
-        self.pcm: asyncio.Queue[bytes] = asyncio.Queue(maxsize=32)
+        # (pcm16 bytes, monotonic time the audio callback received them)
+        self.pcm: asyncio.Queue[tuple[bytes, float]] = asyncio.Queue(maxsize=32)
         self.session_open = False
         self._play = bytearray()
         self._lock = threading.Lock()
@@ -680,9 +681,10 @@ class Ear:
         if self._loop is None:
             return
         raw = bytes(indata)
-        self._loop.call_soon_threadsafe(self._submit, raw)
+        # Stamped here, on the audio thread, so a busy event loop cannot make old audio look recent.
+        self._loop.call_soon_threadsafe(self._submit, raw, time.monotonic())
 
-    def _submit(self, raw: bytes) -> None:
+    def _submit(self, raw: bytes, captured: float | None = None) -> None:
         count = len(raw) // 4
         if count == 0:
             return
@@ -697,7 +699,7 @@ class Ear:
         if self.session_open and not self.playing():
             pcm = float32_to_pcm16le(samples)
             try:
-                self.pcm.put_nowait(pcm)
+                self.pcm.put_nowait((pcm, captured if captured is not None else time.monotonic()))
             except asyncio.QueueFull:
                 pass
 
@@ -875,14 +877,37 @@ def eligible_start(box: dict, captured: float | None) -> float | None:
     return captured
 
 
-def note_mic(box: dict, pcm_bytes: int, sent_at: float) -> None:
-    """Map the input buffer's millisecond offsets to the local clock, one entry per sent chunk."""
+# A chunk sent this long after it was captured has waited in a queue; its timing is not trusted.
+MAX_SEND_LAG_S = 0.5
+
+
+def note_mic(box: dict, pcm_bytes: int, captured: float, sent_at: float | None = None) -> None:
+    """Map the input buffer's millisecond offsets to capture time, one entry per sent chunk."""
 
     box["mic_ms"] = float(box.get("mic_ms") or 0.0) + pcm_bytes / (SAMPLE_RATE * 2) * 1000
+    late = sent_at is not None and sent_at - captured > MAX_SEND_LAG_S
     chunks = box.setdefault("mic_chunks", [])
-    chunks.append((box["mic_ms"], sent_at))
+    chunks.append((box["mic_ms"], None if late else captured))
     if len(chunks) > 4000:
         del chunks[:1000]
+
+
+def claim_answer(box: dict, item: str, start: float | None) -> bool:
+    """The first utterance after the read-back was requested. True when it drops the consent.
+
+    Speech that starts after the read-back fully played, at a known time, becomes the one answer.
+    Speech over the read-back, before it finished, or at an unknown time means Frank may not have
+    heard the whole decision, so the consent is dropped rather than left waiting for a later "yes".
+    """
+
+    waiting = box.get("consent")
+    if waiting is None or not waiting.requested or waiting.answer_item:
+        return False
+    if waiting.armed and start is not None and start > waiting.at:
+        waiting.answer_item = item
+        return False
+    box["consent"] = None
+    return True
 
 
 def capture_time(box: dict, audio_start_ms: object) -> float | None:
@@ -894,9 +919,9 @@ def capture_time(box: dict, audio_start_ms: object) -> float | None:
 
     if not isinstance(audio_start_ms, (int, float)) or isinstance(audio_start_ms, bool):
         return None
-    for end_ms, sent_at in box.get("mic_chunks") or []:
+    for end_ms, captured in box.get("mic_chunks") or []:
         if end_ms >= audio_start_ms:
-            return sent_at - (end_ms - float(audio_start_ms)) / 1000
+            return None if captured is None else captured - (end_ms - float(audio_start_ms)) / 1000
     return None
 
 
@@ -1028,9 +1053,8 @@ async def _pump(
             item = str(event["item_id"])
             start = eligible_start(box, capture_time(box, event.get("audio_start_ms")))
             box.setdefault("speech_starts", {})[item] = start
-            waiting = box.get("consent")
-            if waiting is not None and waiting.armed and not waiting.answer_item and start is not None and start > waiting.at:
-                waiting.answer_item = item
+            if claim_answer(box, item, start):
+                await ws.send(json.dumps(operator_note("Frank spoke before the read-back finished, so that decision was dropped. Nothing was recorded.")))
         line = note_transcript(event)
         if line:
             print(line, flush=True)
@@ -1096,7 +1120,7 @@ async def _send_mic(ws, ear: Ear, closed: asyncio.Event, box: dict | None = None
     try:
         while not closed.is_set():
             try:
-                pcm = await asyncio.wait_for(ear.pcm.get(), timeout=0.2)
+                pcm, captured = await asyncio.wait_for(ear.pcm.get(), timeout=0.2)
             except TimeoutError:
                 continue
             if closed.is_set():
@@ -1104,7 +1128,7 @@ async def _send_mic(ws, ear: Ear, closed: asyncio.Event, box: dict | None = None
             payload = base64.b64encode(pcm).decode("ascii")
             await ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": payload}))
             if box is not None:
-                note_mic(box, len(pcm), time.monotonic())
+                note_mic(box, len(pcm), captured, time.monotonic())
     finally:
         ear.session_open = False
 

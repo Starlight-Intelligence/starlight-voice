@@ -342,8 +342,8 @@ def test_a_dropped_consent_records_nothing(monkeypatch) -> None:
 
 def test_speech_timing_comes_from_the_microphone_clock_not_event_arrival() -> None:
     box: dict = {}
-    for i in range(10):  # ten 100 ms chunks sent at t = 100.1 ... 101.0
-        x_voice.note_mic(box, pcm_bytes=4800, sent_at=100.1 + i * 0.1)
+    for i in range(10):  # ten 100 ms chunks captured at t = 100.1 ... 101.0, sent promptly
+        x_voice.note_mic(box, pcm_bytes=4800, captured=100.1 + i * 0.1, sent_at=100.12 + i * 0.1)
     assert x_voice.capture_time(box, 250) == pytest.approx(100.25)
     assert x_voice.capture_time(box, None) is None, "no offset, no claim about who spoke"
     assert x_voice.capture_time(box, 5000) is None, "an offset this session never sent"
@@ -351,3 +351,28 @@ def test_speech_timing_comes_from_the_microphone_clock_not_event_arrival() -> No
     # A late event for audio captured during Ara's playback stays ineligible whenever it arrives.
     assert x_voice.eligible_start(box, x_voice.capture_time(box, 600)) is None
     assert x_voice.eligible_start(box, None) is None
+
+
+def test_a_chunk_that_waited_in_the_queue_has_no_trusted_time() -> None:
+    box: dict = {}
+    x_voice.note_mic(box, pcm_bytes=4800, captured=100.0, sent_at=110.0)  # Codex round 3 P1: sent 10 s late
+    assert x_voice.capture_time(box, 50) is None
+
+
+def test_speaking_over_the_read_back_drops_the_decision() -> None:
+    pending = _close_451()
+    box: dict = {"consent": pending}
+    assert x_voice.claim_answer(box, "item_1", start=None) is True, "spoke while it was still being read"
+    assert box["consent"] is None
+    pending = _close_451()
+    pending.arm(playback_until=100.0, now=90.0)
+    box = {"consent": pending}
+    assert x_voice.claim_answer(box, "item_2", start=95.0) is True, "Codex round 3 P1: interrupted before playback ended"
+    assert box["consent"] is None
+    pending = _close_451()
+    pending.arm(playback_until=100.0, now=90.0)
+    box = {"consent": pending}
+    assert x_voice.claim_answer(box, "item_3", start=pending.at + 0.5) is False
+    assert pending.answer_item == "item_3"
+    assert x_voice.claim_answer(box, "item_4", start=pending.at + 2) is False, "only the first utterance answers"
+    assert pending.answer_item == "item_3"
