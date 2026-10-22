@@ -6,10 +6,9 @@ no xAI, management or tool-plane credential reaches it.
 
 from __future__ import annotations
 
-import re
-
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -73,7 +72,7 @@ def ask(ref: str, action: str, runner=None) -> dict[str, object]:
     out = _run(["decide", ref, action], runner)
     if not out.get("pending"):
         return {"ok": False, "started": False, "spoken": str(out.get("error") or "I could not read that item back.")[:200]}
-    # The PR number is what Ara must say aloud for the read-back to count (consent.heard_readback).
+    # The repo and PR number go into the read-back sentence the listener has Ara say (x_voice.readback_sentence).
     target = re.search(r"^[\w.-]+/([\w.-]+)#(\d+)@", str(out.get("key") or ""))
     return {
         "ok": True, "started": False, "readback": str(out["readback"]), "token": str(out["token"]),

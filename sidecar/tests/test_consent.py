@@ -260,7 +260,8 @@ def test_a_failed_voice_key_lookup_is_asked_again(monkeypatch) -> None:
 def test_an_answer_that_names_another_action_or_item_is_a_no() -> None:
     pending = _close_451()
     pending.arm(playback_until=0.0, now=0.0)
-    hear = lambda line: consent.answer(pending, line, spoke_at=pending.at + 1, now=pending.at + 2)
+    def hear(line):
+        return consent.answer(pending, line, spoke_at=pending.at + 1, now=pending.at + 2)
     assert hear("yes keep number 5") == "no", "Codex P1: a different instruction is not a yes"
     assert hear("yes review") == "no"
     assert hear("yes 7") == "no"
