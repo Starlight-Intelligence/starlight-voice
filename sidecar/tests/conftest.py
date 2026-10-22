@@ -15,4 +15,7 @@ def _hold_infisical(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "0")
     monkeypatch.setenv("XAI_API_KEY", "")
     monkeypatch.setenv("XAI_MANAGEMENT_KEY", "")
+    monkeypatch.setenv("XAI_MANAGEMENT_API_KEY", "")
     monkeypatch.setenv("XAI_TEAM_ID", "")
+    monkeypatch.setenv("STARLIGHT_XVOICE_TOKEN", "")
+    monkeypatch.setenv("STARLIGHT_XVOICE_PLANE", "0")

@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from .config import load_local_env
+from .config import infisical_enabled, infisical_secret, load_local_env
 from .session_store import state_dir
 
 USD_PER_MINUTE = 0.08
@@ -343,19 +343,66 @@ def _gate_shut(why: str, spoken: str) -> dict[str, object]:
     return {"ok": False, "why": why, "spoken": spoken}
 
 
-def server_spend_gate(get_json=None) -> dict[str, object]:
-    """Refuse to open unless xAI reports a spending limit that still has room.
+_vault: dict[str, str] = {}
+# xAI's console labels it a "management API key", so both spellings occur in vaults.
+MANAGEMENT_KEY_NAMES = ("XAI_MANAGEMENT_KEY", "XAI_MANAGEMENT_API_KEY")
+TEAM_ID_NAMES = ("XAI_TEAM_ID",)
 
-    ``get_json(path) -> dict`` is the test seam. It must not receive the key.
-    """
+
+def _first(names: tuple[str, ...], read) -> str:
+    for name in names:
+        value = (read(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _management_creds(secret=None) -> tuple[str, str]:
+    """Env first, then Infisical. Pulled values stay in this module, never in os.environ,
+    so child processes such as the dispatch script never inherit the management key."""
 
     load_local_env()
-    key = os.environ.get("XAI_MANAGEMENT_KEY", "").strip()
-    team = os.environ.get("XAI_TEAM_ID", "").strip()
+    key = _first(MANAGEMENT_KEY_NAMES, os.environ.get)
+    team = _first(TEAM_ID_NAMES, os.environ.get)
+    if (key and team) or not infisical_enabled():
+        return key, team
+    pull = secret or infisical_secret
+
+    def remembered(name: str) -> str:
+        if secret is not None:
+            return pull(name) or ""
+        # Only a value is cached. A miss (Infisical down, not logged in yet) is asked again next time.
+        if not _vault.get(name):
+            value = (pull(name) or "").strip()
+            if value:
+                _vault[name] = value
+            return value
+        return _vault[name]
+
+    return key or _first(MANAGEMENT_KEY_NAMES, remembered), team or _first(TEAM_ID_NAMES, remembered)
+
+
+def server_spend_gate(get_json=None, secret=None) -> dict[str, object]:
+    """Refuse to open unless xAI reports a spending limit that still has room.
+
+    ``get_json(path) -> dict`` and ``secret(name) -> str`` are test seams.
+    ``get_json`` must not receive the key.
+    """
+
+    key, team = _management_creds(secret)
     if not key or not team:
         return _gate_shut(
             "xai-limit-unconfigured",
             "xAI spending limit is not configured. The socket stays closed.",
+        )
+    # xAI spends prepaid credit before the postpaid limit applies, and auto top-up can refill it, so no
+    # API reading bounds spend unless top-up is off or capped. Only the console shows that; Frank
+    # states it once. This holds whatever the postpaid limit says.
+    if os.environ.get("STARLIGHT_XVOICE_PREPAID_BOUNDED") != "1":
+        return _gate_shut(
+            "xai-prepaid-unbounded",
+            "xAI auto top-up could refill prepaid credit. Check it is off or capped in the xAI console, "
+            "then set STARLIGHT_XVOICE_PREPAID_BOUNDED=1 in .env.local. The socket stays closed.",
         )
     fetch = get_json or (lambda path: _management_get(path, key))
     team_q = quote(team, safe="")

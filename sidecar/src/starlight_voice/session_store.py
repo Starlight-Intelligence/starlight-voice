@@ -272,8 +272,13 @@ def estate_lookup(query: str) -> dict[str, object]:
 
 
 def recall_for_open() -> tuple[str, str]:
-    """One vault recall at socket open. Empty when the gateway is down."""
+    """Vault recall at socket open: the shared tool plane first, the old gateway second."""
 
+    from .tool_plane import opening_brief
+
+    brief = opening_brief()
+    if brief:
+        return brief, f"{brief.count('score=') or 1} hits"
     try:
         from .memory import MemoryGatewayClient
 
