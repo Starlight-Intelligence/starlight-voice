@@ -8,6 +8,6 @@ def test_system_status_shape() -> None:
     assert s["settings"]["stt_engine"] == "groq-openrouter"
     # variants metadata present without constructing services (light path)
     keys = {v["key"] for v in s["variants"]}
-    assert keys == {"component", "openai-realtime", "gemini-live"}
+    assert keys == {"component", "openai-realtime", "gemini-live", "x-voice"}
     assert s["gateway"] in {"running", "not running"}
     assert isinstance(s["runs"], list)

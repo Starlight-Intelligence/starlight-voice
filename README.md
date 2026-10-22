@@ -33,6 +33,29 @@ What is still pending:
 - signed installer
 - legacy SIS/Arcanea task migration scripts
 
+## Adopt the clap ear
+
+Fifteen minutes on a clean Windows PC. One listener owns the microphone. The page only watches. A spoken job emits a packet and does not start a coding agent.
+
+1. Install Python 3.12 and uv.
+2. Clone https://github.com/frankxai/starlight-voice.git and open the `sidecar` folder.
+3. Run `uv venv`, then `uv pip install -e ".[x-voice]"`. Activate that environment.
+4. Sign in with the grok CLI, or set `XAI_API_KEY` to a value that starts with `xai-`.
+5. Run `python -m starlight_voice listen --check`. When it reports ready, run `python -m starlight_voice listen`. If it does not report ready, stop. Do not start a second listener.
+6. In a second terminal, from the repo root, run `python dashboard/server.py`. Open http://127.0.0.1:8765/live. The page does not open a microphone.
+7. Two claps open Ara. One clap ticks. Two claps, or 45 seconds of quiet, close the socket. The day cap is 15 minutes.
+8. A spoken work request emits one dispatch packet with `started` false. It does not start a coding agent.
+
+Plan on $0.08 a minute while the socket is open. Vendor docs have also printed $0.05 a minute. Idle, with the socket closed, is $0 on this plan. `listen --check` does not open the socket.
+
+An OpenRouter key can call Grok for text and for one-way speech. It does not open this realtime socket. `listen --check` will not become ready from that key. No flag changes that.
+
+The grok CLI session skips the spending-limit check and does not turn on server search. An `xai-` key stays closed until `XAI_MANAGEMENT_KEY` and `XAI_TEAM_ID` can read a postpaid limit that still has room, or prepaid credit when no postpaid limit is set. Either way it also needs `STARLIGHT_XVOICE_PREPAID_BOUNDED=1` in `.env.local`, set after you check that prepaid auto top-up is off or capped in the xAI console, because the postpaid limit does not cover prepaid spend. Both are read from the environment first, then from Infisical. Never commit either credential. Stop the listener when you are done.
+
+When the Grok plan is spent but its sign-in is still valid, set `STARLIGHT_XVOICE_TOKEN=api` in `.env.local`. Ara then skips the account and uses the metered `xai-` key, with search on and the spending limit enforced.
+
+After the page is up, `GET http://127.0.0.1:8765/api/live` returns JSON with `phase` and `updated`. The body must not contain a key. `GET http://127.0.0.1:8765/healthz` means the page process is up. It does not mean the ear is listening.
+
 ## Quick Start
 
 Prerequisites:

@@ -27,7 +27,10 @@ def test_local_only_clean_repo_still_surfaces(tmp_path) -> None:
     repo = _make_repo(tmp_path / "clean")
     (repo / "f.txt").write_text("x", encoding="utf-8")
     _git(repo, "add", "-A")
-    _git(repo, "commit", "-qm", "init")
+    # Plumbing, not `git commit`: the machine's commit hooks refuse unclaimed throwaway repos.
+    tree = subprocess.run(["git", "-C", str(repo), "write-tree"], capture_output=True, text=True).stdout.strip()
+    sha = subprocess.run(["git", "-C", str(repo), "commit-tree", tree, "-m", "init"], capture_output=True, text=True).stdout.strip()
+    _git(repo, "update-ref", "HEAD", sha)
     findings = scan_repos([repo])
     assert findings[0].uncommitted == 0
     assert findings[0].no_remote is True

@@ -10,6 +10,11 @@ like .git / sidecar source never leak even on 127.0.0.1):
     GET  /status                   -> system_status()        (cockpit data source)
     GET  /healthz                  -> liveness probe
     POST /ratings                  -> append a bake-off rating (64KB DoS-guarded)
+    GET  /api/pending              -> waiting voice handoffs: code, exact request, repo, seat
+    POST /api/approve {"code"}     -> human ack for one handoff by its code (tier-B gate)
+
+Every POST must be same-origin JSON: Host and Origin are 127.0.0.1 or
+localhost on this port, and content-type is application/json.
 
 This mirrors the default-DENY doctrine in cognition/dispatch.py: enumerate what
 is allowed, refuse the rest — rather than blocklisting what is dangerous.
@@ -20,7 +25,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -51,7 +56,13 @@ STATIC: dict[str, tuple[Path, str]] = {
     "/voice/voice.css": (VOICE / "voice.css", _CT_CSS),
     "/voice/voice.js": (VOICE / "voice.js", _CT_JS),
     "/voice/voice-runtime.mjs": (VOICE / "voice-runtime.mjs", _CT_JS),
+    "/live": (DASH / "live.html", _CT_HTML),
+    "/live.html": (DASH / "live.html", _CT_HTML),
+    "/live.css": (DASH / "live.css", _CT_CSS),
 }
+
+
+POST_ROUTES = frozenset({"/ratings", "/api/approve"})
 
 
 def _system_status() -> dict:
@@ -60,7 +71,7 @@ def _system_status() -> dict:
         from starlight_voice.status import system_status
 
         return system_status()
-    except Exception as e:  # noqa: BLE001 - console must render even if the sidecar is absent
+    except Exception:  # noqa: BLE001 - console must render even if the sidecar is absent
         return {
             "status": "STANDBY",
             "voice_loop": {"mode": "local-first", "first_audio_budget_ms": 606, "state": "standby"},
@@ -88,14 +99,47 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/status":
             self._json(200, _system_status())
             return
+        if path == "/api/live":
+            from starlight_voice.session_store import read_live
+
+            self._json(200, read_live())
+            return
+        if path == "/api/pending":
+            from starlight_voice.approval import pending_details
+
+            self._json(200, {"pending": pending_details()})
+            return
+        if path == "/api/sessions":
+            from starlight_voice.session_store import read_sessions
+
+            self._json(200, {"sessions": read_sessions(20)})
+            return
         entry = STATIC.get(path)
         if entry is None:
             self.send_error(404, "Not found")
             return
         self._serve_file(*entry)
 
+    def _same_origin(self) -> bool:
+        """Refuse what a cross-site page can send without a CORS preflight.
+
+        A browser on any site can POST text/plain to 127.0.0.1 with no preflight.
+        Requiring application/json forces one, which this server never answers;
+        Host and Origin checks also stop DNS rebinding and opaque origins.
+        """
+        port = self.server.server_address[1]
+        allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if (self.headers.get("host") or "").lower() not in allowed:
+            return False
+        origin = self.headers.get("origin")
+        if origin is not None and origin.lower() not in {f"http://{h}" for h in allowed}:
+            return False
+        content_type = (self.headers.get("content-type") or "").split(";")[0].strip().lower()
+        return content_type == "application/json"
+
     def do_POST(self) -> None:
-        if urlparse(self.path).path != "/ratings":
+        path = urlparse(self.path).path
+        if path not in POST_ROUTES:
             self.send_error(404, "Not found")
             return
 
@@ -108,6 +152,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.close_connection = True  # don't read the oversized body; signal close cleanly
             self.send_error(413, "Payload too large")
             return
+        if not self._same_origin():
+            self.close_connection = True
+            self.send_error(403, "Forbidden")
+            return
 
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -115,8 +163,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(400, "Invalid JSON")
             return
 
+        if path == "/api/approve":
+            self._approve(payload)
+            return
+
         record = {
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "recorded_at": datetime.now(UTC).isoformat(),
             "source": "starlight-voice-dashboard",
             "payload": payload,
         }
@@ -128,6 +180,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         self._json(200, {"ok": True, "path": str(RATINGS)})
+
+    def _approve(self, payload: object) -> None:
+        """The human half of the tier-B gate. Ara has no tool that reaches this."""
+        from starlight_voice import approval
+
+        code = str(payload.get("code") or "") if isinstance(payload, dict) else ""
+        result = approval.ack_human(code)
+        self._json(200 if result["ok"] else 409, result)
 
     def _serve_file(self, file_path: Path, content_type: str) -> None:
         try:
