@@ -41,13 +41,107 @@ def test_live_page_and_api(live_server, monkeypatch, tmp_path) -> None:
     publish("armed", voice="ara", memory="idle")
     page = urllib.request.urlopen(live_server + "/live", timeout=5)
     html = page.read()
-    assert b"Live session" in html
+    assert b"Ara" in html
+    assert b'id="queen"' in html
+    assert b'id="phase"' in html
+    for house in (b"FrankX", b"Arcanea", b"GenCreator", b"Starlight", b"Income"):
+        assert house in html
+    assert b'href="https://animations.dev"' in html
+    assert b'href="https://vercel.com/design/guidelines"' in html
+    assert b'href="https://docs.livekit.io/reference/components/agents-ui/"' in html
+    assert b'src="https://animations.dev' not in html
+    assert b'src="https://vercel.com' not in html
+    assert b'src="https://docs.livekit.io' not in html
     assert b'id="orbs"' in html
+    assert b"Start Ara" in html
+    assert b"Stop Ara" in html
+    assert b"clap twice" in html
+    assert b"Look up" in html
+    assert b"Open tab" in html
+    assert b"Open desktop" in html
+    assert b"Grok CLI" in html
+    assert b"GitHub" in html
+    assert b'id="result"' in html
+    assert b"/api/listen/start" in html
+    assert b"/api/listen/stop" in html
+    assert b"/api/operator" in html
     assert b"getUserMedia" not in html
     body = json.loads(urllib.request.urlopen(live_server + "/api/live", timeout=5).read())
     assert body["phase"] == "armed"
     sessions = json.loads(urllib.request.urlopen(live_server + "/api/sessions", timeout=5).read())
     assert sessions["sessions"] == []
+
+
+def test_stop_listener_marks_stopped(live_server, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("STARLIGHT_VOICE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("STARLIGHT_VOICE_LISTEN_DRY", "1")
+    monkeypatch.setenv("STARLIGHT_VOICE_LISTEN_PID", str(tmp_path / "listen.pid"))
+    (tmp_path / "listen.pid").write_text("4300", encoding="utf-8")
+    from starlight_voice.session_store import publish, read_live
+
+    publish("armed", voice="ara", memory="idle")
+    body = json.loads(_post(live_server, "/api/listen/stop", {}).read())
+    assert body["ok"] is True
+    assert body["phase"] == "stopped"
+    assert body["stopped"] == []
+    assert read_live()["phase"] == "stopped"
+    assert not (tmp_path / "listen.pid").exists()
+
+
+def test_start_listener_uses_the_shipped_command(live_server, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("STARLIGHT_VOICE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("STARLIGHT_VOICE_LISTEN_DRY", "1")
+    monkeypatch.setenv("STARLIGHT_VOICE_LISTEN_LOG", str(tmp_path / "listen.out.log"))
+    seen: dict[str, object] = {}
+
+    def fake_popen(argv, **kwargs):
+        seen["argv"] = list(argv)
+        seen["cwd"] = kwargs.get("cwd")
+        from starlight_voice.session_store import publish
+
+        publish("armed", voice="ara", memory="idle")
+
+        class Proc:
+            pid = 1
+
+        return Proc()
+
+    monkeypatch.setattr(dash.subprocess, "Popen", fake_popen)
+    # CI and fresh worktrees have no sidecar/.venv; the route only needs the runtime to exist.
+    runtime = tmp_path / "python.exe"
+    runtime.write_bytes(b"")
+    monkeypatch.setattr(dash, "_listener_python", lambda: runtime)
+    body = json.loads(_post(live_server, "/api/listen/start", {}).read())
+    argv = seen["argv"]
+    assert isinstance(argv, list)
+    assert body["ok"] is True
+    assert body["phase"] == "armed"
+    assert argv[1:] == ["-m", "starlight_voice", "listen"]
+    assert str(argv[0]).endswith("python.exe")
+    assert seen["cwd"] == str(dash.ROOT)
+
+
+def test_desk_counts_without_card_text(live_server, tmp_path, monkeypatch) -> None:
+    pulse = tmp_path / "chair-pulse.json"
+    pulse.write_text(
+        json.dumps(
+            {
+                "ts": "2026-10-17T20:31:57.864Z",
+                "machine": {"loopStatus": "idle-held", "freeRamMB": 1},
+                "inbox": [],
+                "heldTonight": [{"id": "secret-card", "do": "do not show this prompt"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dash, "CHAIR", pulse)
+    body = json.loads(urllib.request.urlopen(live_server + "/api/desk", timeout=5).read())
+    assert body["loop"] == "idle-held"
+    assert body["started"] is False
+    assert body["held"] == 1
+    assert body["inbox"] == 0
+    assert "secret-card" not in json.dumps(body)
+    assert "freeRamMB" not in json.dumps(body)
 
 
 def test_healthz_ok(live_server) -> None:
@@ -161,9 +255,18 @@ def _post(base: str, path: str, body: dict, headers: dict[str, str] | None = Non
         {"Host": "attacker.example:8765"},
     ],
 )
-def test_cross_site_post_is_refused(live_server, headers) -> None:
+@pytest.mark.parametrize("path", ["/api/approve", "/api/listen/start", "/api/listen/stop", "/api/operator"])
+def test_cross_site_post_is_refused(live_server, headers, path) -> None:
     with pytest.raises(urllib.error.HTTPError) as exc:
-        _post(live_server, "/api/approve", {}, headers)
+        _post(live_server, path, {}, headers)
+    assert exc.value.code == 403
+
+
+def test_bare_post_cannot_start_the_microphone(live_server) -> None:
+    """A form or no-cors fetch from any site sends no JSON content-type; it must not arm the mic."""
+    request = urllib.request.Request(live_server + "/api/listen/start", data=b"x", method="POST")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(request, timeout=5)
     assert exc.value.code == 403
 
 

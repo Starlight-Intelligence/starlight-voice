@@ -3,45 +3,87 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Starlight Voice live</title>
+    <meta name="theme-color" content="#07080c" />
+    <title>Ara</title>
     <link rel="stylesheet" href="/live.css" />
   </head>
   <body>
+    <canvas id="orbs" aria-hidden="true"></canvas>
     <main>
-      <header>
-        <div>
-          <p>Starlight Voice</p>
-          <h1>Live session</h1>
-        </div>
-        <a href="/dashboard/cockpit.html">Operator console</a>
-      </header>
-      <div class="stage" id="stage">
-        <canvas id="orbs" aria-hidden="true"></canvas>
-      </div>
+      <ul class="houses" id="houses">
+        <li data-house="frankx">FrankX</li>
+        <li data-house="arcanea">Arcanea</li>
+        <li data-house="gencreator">GenCreator</li>
+        <li data-house="starlight">Starlight</li>
+        <li data-house="income">Income</li>
+      </ul>
+      <p class="queen" id="queen">Queen unavailable. Work has not started. Seat none.</p>
       <ul class="roster" id="roster">
         <li data-voice="eve"><span class="name">Eve</span><span class="role">roster</span></li>
-        <li data-voice="ara" data-live="yes"><span class="name">Ara</span><span class="role">on this socket</span></li>
+        <li data-voice="ara" data-live="yes"><span class="name">Ara</span><span class="role">here</span></li>
         <li data-voice="leo"><span class="name">Leo</span><span class="role">roster</span></li>
       </ul>
-      <p class="phase" id="phase" data-phase="stopped" aria-live="polite">stopped</p>
-      <p class="line" id="line">No transcript yet.</p>
-      <p class="note" id="note">Ara is on this socket. Eve and Leo stay in the roster.</p>
-      <dl>
-        <dt>Voice</dt><dd id="voice">ara</dd>
-        <dt>Reasoning</dt><dd id="reasoning">high</dd>
-        <dt>Memory</dt><dd id="memory">unavailable</dd>
-        <dt>Session</dt><dd id="session">none</dd>
-        <dt>Conversation</dt><dd id="conversation">none</dd>
-        <dt>Microphone</dt><dd id="mic">the listener owns it</dd>
-        <dt>Cap</dt><dd id="cap">15 min a day</dd>
-        <dt>Key</dt><dd id="key">checking</dd>
-      </dl>
-      <p class="reload" id="reload">This page only watches. It does not open the microphone or your signed-in browsers.</p>
-      <h2>Recent session events</h2>
-      <ul id="sessions"></ul>
+      <details class="session">
+        <summary>Session</summary>
+        <dl>
+          <dt>Voice</dt><dd id="voice">ara</dd>
+          <dt>Reasoning</dt><dd id="reasoning">high</dd>
+          <dt>Memory</dt><dd id="memory">unavailable</dd>
+          <dt>Session</dt><dd id="session">none</dd>
+          <dt>Conversation</dt><dd id="conversation">none</dd>
+          <dt>Microphone</dt><dd id="mic">the listener owns it</dd>
+          <dt>Cap</dt><dd id="cap">15 min a day</dd>
+          <dt>Key</dt><dd id="key">checking</dd>
+        </dl>
+        <p class="note" id="note">Ara is the presence. Eve and Leo stay in the roster.</p>
+        <p class="reload" id="reload">This page starts and stops Ara. It does not open a second microphone or your signed-in browsers.</p>
+        <ul class="references">
+          <li><a href="https://animations.dev">Design engineering motion</a></li>
+          <li><a href="https://vercel.com/design/guidelines">Web interface guidelines</a></li>
+          <li><a href="https://docs.livekit.io/reference/components/agents-ui/">Voice agent interface</a></li>
+        </ul>
+        <h2>Recent session events</h2>
+        <ul id="sessions"></ul>
+      </details>
+      <section class="control" aria-label="Ara controls">
+        <p class="who" id="who" translate="no">Ara</p>
+        <p class="phase" id="phase" data-phase="stopped" aria-live="polite">She's off</p>
+        <p class="howto" id="howto">The microphone is closed. Start Ara, then clap twice.</p>
+        <p class="line" id="line" hidden></p>
+        <button type="button" class="toggle" id="toggle" data-action="start">Start Ara</button>
+        <p class="facts" id="facts">15 min a day</p>
+        <form class="ask" id="ask" action="/api/operator" method="post">
+          <label for="ask-text">Ask</label>
+          <input id="ask-text" name="ask" type="text" autocomplete="off" placeholder="Memory, a tab, or a seat…" />
+          <div class="ask-actions">
+            <button type="button" id="lookup">Look up</button>
+            <button type="button" id="open-tab">Open tab</button>
+            <button type="button" id="open-desktop">Open desktop</button>
+            <button type="button" id="handoff-grok">Grok CLI</button>
+            <button type="button" id="handoff-github">GitHub</button>
+          </div>
+        </form>
+        <p class="result" id="result" aria-live="polite">No handoff yet.</p>
+      </section>
     </main>
     <script>
       const roster = ["eve", "ara", "leo"];
+      const houses = ["frankx", "arcanea", "gencreator", "starlight", "income"];
+      const phaseCopy = {
+        stopped: ["She's off", "The microphone is closed. Start Ara, then clap twice."],
+        armed: ["Listening", "One clap ticks. Two claps open her. Two claps, or 45 seconds of quiet, close the call."],
+        open: ["She's in the call", "The voice socket is open. Stop ends the call and releases the microphone."],
+        speaking: ["Speaking", "She is talking. Stop ends the call and releases the microphone."],
+      };
+      const keyWords = {
+        "grok-cli": "Grok account",
+        "grok-cli-expired": "Grok login expired",
+        "api-key": "xAI key",
+        infisical: "Infisical",
+        missing: "No key",
+      };
+      let pending = false;
+      let trouble = "";
       const text = (id, value) => {
         const node = document.getElementById(id);
         node.textContent = value || "none";
@@ -49,7 +91,7 @@
       const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       const canvas = document.getElementById("orbs");
       const gl = canvas.getContext("webgl", { antialias: false, alpha: false, powerPreference: "low-power" });
-      const energyOf = { stopped: 0.16, armed: 0.46, open: 0.74, speaking: 1 };
+      const energyOf = { stopped: 0.22, armed: 0.48, open: 0.72, speaking: 1 };
       let targetEnergy = energyOf.stopped;
       let energy = targetEnergy;
       let primary = 1;
@@ -58,14 +100,16 @@
       function markLive(voice) {
         const who = roster.includes(voice) ? voice : "ara";
         primary = roster.indexOf(who);
+        const label = who.charAt(0).toUpperCase() + who.slice(1);
+        document.title = label;
+        document.getElementById("who").textContent = label;
         for (const item of document.querySelectorAll("#roster li")) {
           const on = item.dataset.voice === who;
           item.dataset.live = on ? "yes" : "no";
-          item.querySelector(".role").textContent = on ? "on this socket" : "roster";
+          item.querySelector(".role").textContent = on ? "here" : "roster";
         }
-        const label = who.charAt(0).toUpperCase() + who.slice(1);
         document.getElementById("note").textContent =
-          label + " is on this socket. The other two stay in the roster.";
+          label + " is the presence. The other two stay in the roster.";
       }
 
       function compile(type, source) {
@@ -114,39 +158,42 @@
             float v = 0.0;
             v += 0.50 * noise(p); p = p * 2.02 + vec2(1.7, 9.2);
             v += 0.25 * noise(p); p = p * 2.03 + vec2(8.3, 2.8);
-            v += 0.125 * noise(p); p = p * 2.01 + vec2(3.1, 6.7);
-            v += 0.0625 * noise(p);
+            v += 0.125 * noise(p);
             return v;
           }
-          vec3 orb(vec2 uv, vec2 center, float radius, float weight, vec3 warm, vec3 cool, float seed) {
-            vec2 aspect = vec2(uRes.x / max(uRes.y, 1.0), 1.0);
-            vec2 p = (uv - center) * aspect;
-            float pulse = 1.0 + uSpeak * weight * 0.035 * sin(uTime * 5.5 + seed);
-            float d = length(p) / (radius * pulse);
-            float t = uTime * (0.12 + uEnergy * weight * 0.42) + seed;
-            vec2 q = p * 1.7;
-            q += vec2(fbm(q + t), fbm(q - t + 3.0)) * (0.28 + uEnergy * weight * 0.4);
-            float n = fbm(q * 1.8 + t);
-            float body = smoothstep(1.0, 0.18, d);
-            float rim = pow(smoothstep(0.15, 1.0, d), 1.35) * body;
-            vec3 col = mix(warm, cool, n);
-            col = mix(col, vec3(1.0, 0.97, 0.93), body * (0.25 + n * 0.35) * weight);
-            col *= 0.42 + uEnergy * weight * 0.7;
-            col += rim * mix(cool, vec3(1.0), 0.45) * (0.28 + uEnergy * weight);
-            float glow = exp(-max(d - 0.86, 0.0) * 5.5) * (0.16 + uEnergy * weight * 0.5);
-            return col * max(body, glow);
-          }
           void main() {
-            vec3 eve = clamp(orb(vUv, vec2(0.18, 0.56), 0.115, uPrimary < 0.5 ? 1.0 : 0.3,
-              vec3(0.93, 0.78, 1.0), vec3(0.42, 0.62, 1.0), 2.0), 0.0, 1.0);
-            vec3 ara = clamp(orb(vUv, vec2(0.50, 0.50), 0.20, abs(uPrimary - 1.0) < 0.5 ? 1.0 : 0.3,
-              vec3(1.0, 0.78, 0.58), vec3(0.62, 0.78, 1.0), 0.4), 0.0, 1.0);
-            vec3 leo = clamp(orb(vUv, vec2(0.82, 0.56), 0.115, uPrimary > 1.5 ? 1.0 : 0.3,
-              vec3(0.70, 0.84, 1.0), vec3(0.86, 0.92, 1.0), 4.2), 0.0, 1.0);
-            vec3 color = vec3(0.028, 0.031, 0.043);
-            color = 1.0 - (1.0 - color) * (1.0 - eve);
-            color = 1.0 - (1.0 - color) * (1.0 - ara);
-            color = 1.0 - (1.0 - color) * (1.0 - leo);
+            float aspect = uRes.x / max(uRes.y, 1.0);
+            vec2 p = (vUv - vec2(0.5, 0.56)) * vec2(aspect, 1.0);
+            float radius = 0.20 + uSpeak * 0.008;
+            float d = length(p);
+            float inside = smoothstep(radius, radius - 0.004, d);
+            float z = sqrt(max(radius * radius - d * d, 0.0)) / radius;
+            vec3 normal = normalize(vec3(p / radius, z));
+            float t = uTime * (0.18 + uEnergy * 0.55);
+            vec2 warp = normal.xy * (1.6 + uEnergy * 0.8);
+            warp += vec2(fbm(warp + t), fbm(warp - t + 2.0)) * (0.35 + uSpeak * 0.25);
+            float n = fbm(warp * 1.8 + normal.z + t);
+            float n2 = fbm(warp * 3.1 - t * 0.7);
+            vec3 eveWarm = vec3(0.62, 0.48, 0.98);
+            vec3 eveCool = vec3(0.28, 0.40, 0.92);
+            vec3 araWarm = vec3(1.0, 0.78, 0.58);
+            vec3 araCool = vec3(0.45, 0.62, 0.98);
+            vec3 leoWarm = vec3(0.55, 0.78, 1.0);
+            vec3 leoCool = vec3(0.72, 0.88, 1.0);
+            float eveW = 1.0 - smoothstep(0.0, 0.5, uPrimary);
+            float leoW = smoothstep(1.5, 2.0, uPrimary);
+            float araW = 1.0 - eveW - leoW;
+            vec3 warm = eveWarm * eveW + araWarm * araW + leoWarm * leoW;
+            vec3 cool = eveCool * eveW + araCool * araW + leoCool * leoW;
+            vec3 ink = mix(cool, warm, n);
+            vec3 core = vec3(1.0, 0.97, 0.94);
+            ink = mix(ink, core, (0.35 + n2 * 0.4) * z * (0.45 + uEnergy * 0.55));
+            float fres = pow(1.0 - clamp(normal.z, 0.0, 1.0), 2.4);
+            ink += fres * mix(cool, vec3(1.0), 0.65) * (0.35 + uEnergy * 0.5);
+            float glow = exp(-max(d - radius * 0.92, 0.0) * 14.0) * (0.10 + uEnergy * 0.22);
+            vec3 color = vec3(0.027, 0.031, 0.047);
+            color += ink * inside;
+            color += glow * mix(warm, core, 0.5);
             gl_FragColor = vec4(min(color, vec3(1.0)), 1.0);
           }
         `);
@@ -155,7 +202,7 @@
         gl.bindAttribLocation(program, 0, "aPos");
         gl.linkProgram(program);
         if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-          document.getElementById("stage").dataset.fallback = "css";
+          document.body.dataset.fallback = "css";
         } else {
           const buffer = gl.createBuffer();
           gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
@@ -177,7 +224,7 @@
               canvas.width = pw;
               canvas.height = ph;
             }
-            energy += (targetEnergy - energy) * (reduce ? 1 : 0.08);
+            energy += (targetEnergy - energy) * (reduce ? 1 : 0.06);
             gl.viewport(0, 0, canvas.width, canvas.height);
             gl.useProgram(program);
             gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
@@ -193,7 +240,7 @@
         }
       }
       } catch (err) {
-        document.getElementById("stage").dataset.fallback = "css";
+        document.body.dataset.fallback = "css";
         draw = () => {};
       }
 
@@ -208,18 +255,110 @@
         else cancelAnimationFrame(frame);
       });
 
+      function paintControl(phase) {
+        const copy = phaseCopy[phase] || phaseCopy.stopped;
+        const node = document.getElementById("phase");
+        const button = document.getElementById("toggle");
+        const on = phase === "armed" || phase === "open" || phase === "speaking";
+        node.dataset.phase = phase;
+        if (pending) return;
+        node.textContent = copy[0];
+        document.getElementById("howto").textContent = trouble && phase === "stopped" ? trouble : copy[1];
+        button.dataset.action = on ? "stop" : "start";
+        button.textContent = on ? "Stop Ara" : "Start Ara";
+      }
+
+      async function setListen(action) {
+        if (pending) return;
+        pending = true;
+        trouble = "";
+        const button = document.getElementById("toggle");
+        button.disabled = true;
+        button.textContent = action === "start" ? "Starting…" : "Stopping…";
+        try {
+          const listenUrl = { start: "/api/listen/start", stop: "/api/listen/stop" };
+          const response = await fetch(listenUrl[action] || listenUrl.start, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: "{}",
+          });
+          const body = await response.json();
+          if (!body.ok) trouble = body.error || "That did not work.";
+        } catch {
+          trouble = "This page could not reach the listener control.";
+        } finally {
+          pending = false;
+          button.disabled = false;
+          tick();
+        }
+      }
+
+      document.getElementById("toggle").addEventListener("click", () => {
+        setListen(document.getElementById("toggle").dataset.action || "start");
+      });
+
+      const askText = document.getElementById("ask-text");
+      async function ask(action, extra) {
+        const query = askText.value.trim();
+        const payload = Object.assign({ action: action }, extra || {});
+        if (action === "lookup") payload.query = query;
+        if (action === "open") payload.target = query;
+        if (action === "handoff") payload.utterance = query || "public note";
+        try {
+          const response = await fetch("/api/operator", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const body = await response.json();
+          document.getElementById("result").textContent = body.spoken || "No result.";
+        } catch {
+          document.getElementById("result").textContent = "This page could not reach the operator.";
+        }
+      }
+      document.getElementById("lookup").addEventListener("click", () => ask("lookup"));
+      document.getElementById("open-tab").addEventListener("click", () => ask("open", { kind: "tab" }));
+      document.getElementById("open-desktop").addEventListener("click", () => ask("open", { kind: "desktop" }));
+      document.getElementById("handoff-grok").addEventListener("click", () => ask("handoff", { seat: "grok-local" }));
+      document.getElementById("handoff-github").addEventListener("click", () => ask("handoff", { seat: "github" }));
+      document.getElementById("ask").addEventListener("submit", (event) => {
+        event.preventDefault();
+        ask("lookup");
+      });
+
       async function tick() {
         try {
           const live = await fetch("/api/live").then((response) => response.json());
           const phase = live.phase || "stopped";
-          const node = document.getElementById("phase");
-          node.dataset.phase = phase;
-          node.textContent = phase;
+          paintControl(phase);
           targetEnergy = energyOf[phase] ?? energyOf.stopped;
           speak = phase === "speaking" ? 1 : 0;
           const voice = String(live.voice || "ara").toLowerCase();
           markLive(voice);
-          text("line", live.line || "No transcript yet.");
+          const line = document.getElementById("line");
+          const spoken = live.line || "";
+          line.hidden = !spoken;
+          line.textContent = spoken;
+          const house = houses.includes(String(live.house || "").toLowerCase())
+            ? String(live.house).toLowerCase()
+            : "";
+          for (const item of document.querySelectorAll("#houses li")) {
+            item.dataset.live = item.dataset.house === house ? "yes" : "no";
+          }
+          const seat = live.primary ? String(live.primary) : "none";
+          const started = live.started === true ? "true" : "false";
+          let desk = { loop: "unavailable" };
+          try {
+            desk = await fetch("/api/desk").then((response) => response.json());
+          } catch {
+            desk = { loop: "unavailable" };
+          }
+          const work = started === "true" ? "Work started" : "Work has not started";
+          text("queen", "Queen " + (desk.loop || "unavailable") + ". " + work + ". Seat " + seat + ".");
+          const mic = live.mic ? String(live.mic) : "Mic closed";
+          const cap = live.cap || "15 min a day";
+          const key = keyWords[live.key] || (live.key ? String(live.key) : "No key");
+          text("facts", [phase === "stopped" ? "Mic closed" : mic, cap, key].join(" · "));
           text("voice", live.voice || "ara");
           text("reasoning", live.reasoning || "high");
           text("memory", live.memory || "unavailable");
