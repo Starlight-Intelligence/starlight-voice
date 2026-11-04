@@ -42,6 +42,7 @@ from .session_store import (
     publish,
     recall_for_open,
     safe_conversation_id,
+    state_dir,
 )
 from .spend import (
     USD_PER_MINUTE,
@@ -376,9 +377,53 @@ def _infisical_enabled() -> bool:
 
 
 def _api_preferred() -> bool:
-    """STARLIGHT_XVOICE_TOKEN=api skips a signed-in Grok account whose plan is spent."""
+    """Skip the signed-in Grok account: forced by STARLIGHT_XVOICE_TOKEN=api, or after xAI refused it."""
 
-    return os.environ.get("STARLIGHT_XVOICE_TOKEN", "").strip().lower() == "api"
+    if os.environ.get("STARLIGHT_XVOICE_TOKEN", "").strip().lower() == "api":
+        return True
+    return subscription_limited_until() is not None
+
+
+# xAI does not report when a spent plan resets, so the account is retried after this pause.
+SUBSCRIPTION_RETRY_S = 3600
+_REFUSED_STATUS = frozenset({401, 402, 403, 429})
+# "rate" alone would match "moderated" or "generate"; rate limits already say "limit".
+_REFUSED_WORDS = ("limit", "quota", "exceeded", "insufficient", "credit", "unauthor", "forbidden")
+
+
+def _limit_path() -> Path:
+    return state_dir() / "subscription-limited.json"
+
+
+def subscription_limited_until(now: float | None = None) -> float | None:
+    """When the account may be tried again, or None when it is usable now."""
+
+    try:
+        until = float(json.loads(_limit_path().read_text(encoding="utf-8"))["until"])
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+    return until if until > (now if now is not None else time.time()) else None
+
+
+def mark_subscription_limited(now: float | None = None) -> float:
+    until = (now if now is not None else time.time()) + SUBSCRIPTION_RETRY_S
+    path = _limit_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"until": until}), encoding="utf-8")
+    os.replace(tmp, path)
+    return until
+
+
+def subscription_refused(exc: BaseException | None = None, code: str = "") -> bool:
+    """True when xAI turned the account away (plan spent or not allowed), not on a network blip."""
+
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None) or getattr(exc, "status_code", None)
+    if status in _REFUSED_STATUS:
+        return True
+    text = code.lower()
+    return any(word in text for word in _REFUSED_WORDS)
 
 
 _pulled: str | None = None
@@ -1170,10 +1215,10 @@ async def _run_socket(
     box: dict[str, str] | None = None,
     server_tools: bool = True,
     x_search: bool = False,
-) -> dict[str, bool]:
+) -> dict[str, object]:
     import websockets
 
-    saw = {"audio": False, "transcript": False, "tool": False, "done": False, "error": False, "speech": False, "resume_rejected": False}
+    saw: dict[str, object] = {"audio": False, "transcript": False, "tool": False, "done": False, "error": False, "speech": False, "resume_rejected": False}
     meter = {"web_search": 0, "x_search": 0}
     async with websockets.connect(
         realtime_url(resume_id),
@@ -1200,6 +1245,10 @@ async def _run_socket(
             if opened.get("type") == "error":
                 saw["error"] = True
                 saw["resume_rejected"] = bool(resume_id)
+                detail = opened.get("error") if isinstance(opened.get("error"), dict) else {}
+                saw["error_code"] = " ".join(
+                    str(part) for part in (opened.get("code"), detail.get("code"), detail.get("type")) if part
+                )[:200]
                 print(f"voice error: {opened.get('code') or 'error'}", flush=True)
                 break
             if opened.get("type") == "session.updated":
@@ -1348,10 +1397,14 @@ async def run_clap_loop() -> int:
         cap=cap_label(),
         key=str(report["token_source"]),
     )
+    reopen = False
     try:
         while True:
-            ear.toggle.clear()
-            await ear.toggle.wait()
+            if reopen:
+                reopen = False  # the plan was refused mid-open: Frank already clapped, so no second clap
+            else:
+                ear.toggle.clear()
+                await ear.toggle.wait()
             ear.toggle.clear()
             ear.clear_play()
             fresh, source = resolve_credential()
@@ -1465,8 +1518,9 @@ async def run_clap_loop() -> int:
 
             watcher = asyncio.create_task(_watch())
             idler = asyncio.create_task(_idle())
+            refused = False
             try:
-                await _run_socket(
+                result = await _run_socket(
                     token,
                     ear,
                     text="",
@@ -1479,7 +1533,9 @@ async def run_clap_loop() -> int:
                     server_tools=server_tools_enabled(source),
                     x_search=x_search_enabled(),
                 )
+                refused = bool(result.get("error")) and subscription_refused(code=str(result.get("error_code") or ""))
             except Exception as exc:
+                refused = subscription_refused(exc)
                 print(f"voice socket failed: {safe_error(exc)}", flush=True)
                 print("armed", flush=True)
             finally:
@@ -1508,6 +1564,15 @@ async def run_clap_loop() -> int:
                     cap=label,
                     key=source,
                 )
+            if refused and source == "grok-cli":
+                mark_subscription_limited()
+                fallback, fallback_source = resolve_credential()
+                if fallback:
+                    # Re-open at once on the metered key; the loop runs its spend gate and cap first.
+                    print(f"Grok plan refused the call. Switching to the {fallback_source} lane.", flush=True)
+                    reopen = True
+                else:
+                    print("Grok plan refused the call and no xAI API key is set. The socket stays closed.", flush=True)
             print("armed", flush=True)
     finally:
         publish("stopped", pid=os.getpid())

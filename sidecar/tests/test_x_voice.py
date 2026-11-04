@@ -700,3 +700,78 @@ def test_the_gated_credential_is_the_one_that_opens(monkeypatch) -> None:
     assert calls == [1], "a metered key is always gated"
     assert x_voice.open_spend_gate("grok-cli")["ok"] is True
     assert calls == [1], "the account session skips the metered gate"
+
+
+def _live_account(tmp_path: Path) -> Path:
+    auth = tmp_path / "auth.json"
+    auth.write_text(json.dumps({"acct": {"key": "cli-token-not-real", "expires_at": "2999-01-01T00:00:00+00:00"}}), encoding="utf-8")
+    return auth
+
+
+def test_refused_plan_switches_the_next_open_to_the_api_key(monkeypatch, tmp_path: Path) -> None:
+    from starlight_voice import x_voice
+
+    monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(_live_account(tmp_path)))
+    monkeypatch.setenv("STARLIGHT_VOICE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-not-real")
+    monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "0")
+    monkeypatch.delenv("STARLIGHT_XVOICE_TOKEN", raising=False)
+    assert x_voice.resolve_credential() == ("cli-token-not-real", "grok-cli")
+
+    x_voice.mark_subscription_limited()
+
+    assert x_voice.resolve_credential() == ("xai-test-not-real", "api-key")
+    assert x_voice.token_status()["source"] == "api-key"
+
+
+def test_refused_plan_is_retried_after_the_pause(monkeypatch, tmp_path: Path) -> None:
+    from starlight_voice import x_voice
+
+    monkeypatch.setenv("STARLIGHT_VOICE_STATE_DIR", str(tmp_path / "state"))
+    x_voice.mark_subscription_limited(now=1_000.0)
+    assert x_voice.subscription_limited_until(now=1_000.0 + x_voice.SUBSCRIPTION_RETRY_S - 1) is not None
+    assert x_voice.subscription_limited_until(now=1_000.0 + x_voice.SUBSCRIPTION_RETRY_S + 1) is None
+
+
+def test_refused_plan_with_no_api_key_stays_closed(monkeypatch, tmp_path: Path) -> None:
+    from starlight_voice import x_voice
+
+    monkeypatch.setenv("STARLIGHT_GROK_AUTH", str(_live_account(tmp_path)))
+    monkeypatch.setenv("STARLIGHT_VOICE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setenv("STARLIGHT_XVOICE_INFISICAL", "0")
+    x_voice.mark_subscription_limited()
+    assert x_voice.resolve_credential() == (None, "missing")
+
+
+class _Response:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+class _Rejected(Exception):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.response = _Response(status_code)
+
+
+@pytest.mark.parametrize("status", [401, 402, 403, 429])
+def test_handshake_refusal_counts_as_a_spent_plan(status: int) -> None:
+    from starlight_voice.x_voice import subscription_refused
+
+    assert subscription_refused(_Rejected(status)) is True
+
+
+@pytest.mark.parametrize("code", ["rate_limit_exceeded", "insufficient_quota", "usage limit reached"])
+def test_error_event_refusal_counts_as_a_spent_plan(code: str) -> None:
+    from starlight_voice.x_voice import subscription_refused
+
+    assert subscription_refused(code=code) is True
+
+
+def test_network_failure_is_not_a_spent_plan() -> None:
+    from starlight_voice.x_voice import subscription_refused
+
+    assert subscription_refused(_Rejected(502)) is False
+    assert subscription_refused(TimeoutError("timed out")) is False
+    assert subscription_refused(code="invalid_session_update") is False
