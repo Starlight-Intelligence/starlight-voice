@@ -72,6 +72,17 @@ def test_live_page_and_api(live_server, monkeypatch, tmp_path) -> None:
     assert sessions["sessions"] == []
 
 
+def test_live_reports_a_paused_grok_plan(live_server, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("STARLIGHT_VOICE_STATE_DIR", str(tmp_path))
+    from starlight_voice.x_voice import mark_subscription_limited
+
+    body = json.loads(urllib.request.urlopen(live_server + "/api/live", timeout=5).read())
+    assert body["plan_paused_until"] is None
+    until = mark_subscription_limited()
+    body = json.loads(urllib.request.urlopen(live_server + "/api/live", timeout=5).read())
+    assert body["plan_paused_until"] == until
+
+
 def test_stop_listener_marks_stopped(live_server, monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("STARLIGHT_VOICE_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("STARLIGHT_VOICE_LISTEN_DRY", "1")

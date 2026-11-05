@@ -291,8 +291,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/live":
             from starlight_voice.session_store import read_live
+            from starlight_voice.x_voice import subscription_limited_until
 
-            self._json(200, read_live())
+            # live.json is rewritten on every phase change, so the plan pause is read from its own file.
+            self._json(200, {**read_live(), "plan_paused_until": subscription_limited_until()})
             return
         if path == "/api/pending":
             from starlight_voice.approval import pending_details

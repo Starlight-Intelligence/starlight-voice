@@ -358,7 +358,12 @@
           const mic = live.mic ? String(live.mic) : "Mic closed";
           const cap = live.cap || "15 min a day";
           const key = keyWords[live.key] || (live.key ? String(live.key) : "No key");
-          text("facts", [phase === "stopped" ? "Mic closed" : mic, cap, key].join(" · "));
+          const facts = [phase === "stopped" ? "Mic closed" : mic, cap, key];
+          if (typeof live.plan_paused_until === "number") {
+            const back = new Date(live.plan_paused_until * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+            facts.push("Grok plan paused until " + back);
+          }
+          text("facts", facts.join(" · "));
           text("voice", live.voice || "ara");
           text("reasoning", live.reasoning || "high");
           text("memory", live.memory || "unavailable");
