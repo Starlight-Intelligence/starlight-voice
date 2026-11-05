@@ -21,10 +21,13 @@ def test_ara_session_advertises_exactly_the_kernel_tools() -> None:
     assert x_voice.CLIENT_TOOLS == kernel.NAMES
 
 
-def test_ara_dispatches_every_kernel_tool() -> None:
+def test_ara_handles_propose_and_consent_itself_and_reads_through_the_kernel() -> None:
     source = inspect.getsource(x_voice._finish_tools)
-    missing = [name for name in kernel.NAMES if f'name == "{name}"' not in source]
-    assert missing == []
+    gated = {t.name for t in kernel.TOOLS if t.authority != "read"}
+    assert [name for name in gated if f'name == "{name}"' not in source] == []
+    reads = {t.name for t in kernel.TOOLS if t.authority == "read"}
+    assert [name for name in reads if f'name == "{name}"' in source] == []
+    assert "operator_kernel.run_read(name, arguments)" in source
 
 
 def test_only_the_spoken_go_tools_carry_consent_and_none_writes_an_approval() -> None:
@@ -48,3 +51,27 @@ def test_every_schema_is_a_closed_object_with_its_required_fields_defined() -> N
         assert params["type"] == "object"
         assert set(params.get("required", [])) <= set(params["properties"])
         assert tool.description.strip()
+
+
+def test_every_read_tool_has_one_shared_handler() -> None:
+    reads = {t.name for t in kernel.TOOLS if t.authority == "read"}
+    assert reads == set(kernel._READ_HANDLERS)
+
+
+def test_run_read_refuses_propose_consent_and_unknown_tools() -> None:
+    import asyncio
+
+    for name in ("meta_harness", "confirm_handoff", "triage_decide", "approve", ""):
+        result = asyncio.run(kernel.run_read(name, {}))
+        assert result["ok"] is False
+        assert result["started"] is False
+
+
+def test_run_read_calls_the_same_handler_ara_uses(monkeypatch) -> None:
+    import asyncio
+
+    seen: list[str] = []
+    monkeypatch.setattr("starlight_voice.tool_plane.recall", lambda q: seen.append(q) or {"ok": True, "spoken": "found"})
+    result = asyncio.run(kernel.run_read("recall", {"query": "voice plan"}))
+    assert result == {"ok": True, "spoken": "found"}
+    assert seen == ["voice plan"]

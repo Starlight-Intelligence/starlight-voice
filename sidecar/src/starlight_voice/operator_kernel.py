@@ -8,10 +8,14 @@ spoken go only, and the ack stays on the tray, the CLI, or the same-origin dashb
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from . import approval, tool_plane, triage_bridge
 from .meta_harness import JOBS
+from .session_store import estate_lookup
 
 Authority = Literal["read", "propose", "consent"]
 
@@ -141,3 +145,26 @@ def chat_schemas(*, authority: frozenset[Authority] | None = None) -> list[dict[
         for t in TOOLS
         if authority is None or t.authority in authority
     ]
+
+
+# One handler per read tool. Each engine calls run_read, so Ara and a cascade fallback answer from the
+# same code. Propose and consent tools stay with the engine: they need its per-call consent state.
+_READ_HANDLERS: dict[str, Callable[[dict], dict[str, object]]] = {
+    "estate_lookup": lambda a: estate_lookup(str(a.get("query") or "")),
+    "handoff_status": lambda a: approval.status(str(a.get("proposal") or "")),
+    "recall": lambda a: tool_plane.recall(str(a.get("query") or "")),
+    "estate_status": lambda a: tool_plane.estate_status(str(a.get("kind") or "")),
+    "triage_next": lambda a: triage_bridge.next_items(a.get("count") or 3),
+}
+
+_NOT_HERE = {"ok": False, "started": False, "spoken": "That tool is not on this operator."}
+
+
+async def run_read(name: str, arguments: dict) -> dict[str, object]:
+    """Run one read tool off the event loop. Anything that is not a read tool is refused."""
+
+    tool = by_name(name)
+    handler = _READ_HANDLERS.get(name)
+    if tool is None or tool.authority != "read" or handler is None:
+        return dict(_NOT_HERE)
+    return await asyncio.to_thread(handler, arguments if isinstance(arguments, dict) else {})

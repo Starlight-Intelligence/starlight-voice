@@ -26,14 +26,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from . import approval, consent, operator_kernel, tool_plane, triage_bridge
+from . import approval, consent, operator_kernel, triage_bridge
 from .audio_contract import float32_to_pcm16le
 from .clap import ClapDetector
 from .config import infisical_enabled, infisical_secret, load_local_env, repo_root
 from .meta_harness import dispatch_script, route_work
 from .session_store import (
     append_event,
-    estate_lookup,
     last_conversation_id,
     merge_live,
     new_session_id,
@@ -926,24 +925,15 @@ async def _finish_tools(ws, calls: list[dict], box: dict[str, str] | None = None
                     kind="handoff", proposal=str(result["proposal"]), readback=spoken,
                     canonical=f"{spoken[:280].rstrip('. ')}. Say yes to start it, or no.",
                 )
-        elif name == "estate_lookup":
-            result = estate_lookup(str(arguments.get("query") or ""))
         elif name == "confirm_handoff":
             result = confirm_heard(box, str(arguments.get("proposal") or ""))
             _touch_live(box, line=str(result.get("spoken") or ""), proposal=result.get("proposal") or "")
-        elif name == "triage_next":
-            result = await asyncio.to_thread(triage_bridge.next_items, arguments.get("count") or 3)
         elif name == "triage_decide":
             result = open_triage_consent(box, await asyncio.to_thread(
                 triage_bridge.ask, str(arguments.get("ref") or ""), str(arguments.get("action") or "")))
-        elif name == "handoff_status":
-            result = approval.status(str(arguments.get("proposal") or ""))
-        elif name == "recall":
-            result = await asyncio.to_thread(tool_plane.recall, str(arguments.get("query") or ""))
-        elif name == "estate_status":
-            result = await asyncio.to_thread(tool_plane.estate_status, str(arguments.get("kind") or ""))
         else:
-            result = {"ok": False, "started": False, "spoken": "That tool is not on this operator."}
+            # Every read tool, and the refusal for an unknown name, come from the shared kernel.
+            result = await operator_kernel.run_read(name, arguments)
         spoken = result.get("spoken")
         if isinstance(spoken, str):
             print(spoken, flush=True)
