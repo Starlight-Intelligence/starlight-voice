@@ -26,11 +26,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from . import approval, consent, tool_plane, triage_bridge
+from . import approval, consent, operator_kernel, tool_plane, triage_bridge
 from .audio_contract import float32_to_pcm16le
 from .clap import ClapDetector
 from .config import infisical_enabled, infisical_secret, load_local_env, repo_root
-from .meta_harness import JOBS, dispatch_script, route_work
+from .meta_harness import dispatch_script, route_work
 from .session_store import (
     append_event,
     estate_lookup,
@@ -94,25 +94,6 @@ _SERVER_TOOLS = (
     {"type": "x_search"},
 )
 
-_TOOL = {
-    "type": "function",
-    "name": "meta_harness",
-    "description": (
-        "Route one spoken work request through the Starlight meta harness. "
-        "Returns the seat and, for public repo work, a proposal that needs Frank's spoken go "
-        "and his approve press. Does not start the seat."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "utterance": {"type": "string", "description": "What Frank asked, verbatim."},
-            "job": {"type": "string", "enum": list(JOBS)},
-        },
-        "required": ["utterance", "job"],
-    },
-}
-
-
 def voice_name() -> str:
     return os.environ.get("STARLIGHT_XVOICE_VOICE", "ara").strip() or "ara"
 
@@ -124,100 +105,7 @@ def reasoning_effort() -> str:
     return effort
 
 
-_LOOKUP = {
-    "type": "function",
-    "name": "estate_lookup",
-    "description": (
-        "Look up a phrase on this machine: the voice session, the live phase, "
-        "and the Starlight desk files. Does not search the public web and does not start work."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {"query": {"type": "string"}},
-        "required": ["query"],
-    },
-}
-
-_PROPOSAL_PARAM = {
-    "type": "object",
-    "properties": {"proposal": {"type": "string", "description": "The proposal id meta_harness returned."}},
-    "required": ["proposal"],
-}
-
-_CONFIRM = {
-    "type": "function",
-    "name": "confirm_handoff",
-    "description": (
-        "Record Frank's spoken go for one proposal. Call only after he says go for it. "
-        "Queues a Queen card only if he has also pressed approve."
-    ),
-    "parameters": _PROPOSAL_PARAM,
-}
-
-_STATUS = {
-    "type": "function",
-    "name": "handoff_status",
-    "description": "Read where one proposal is: waiting, queued, running, reported, or failed.",
-    "parameters": _PROPOSAL_PARAM,
-}
-
-_RECALL = {
-    "type": "function",
-    "name": "recall",
-    "description": (
-        "Search Frank's memory vault: decisions, plans, projects, people, and earlier work. "
-        "Read-only. Use it before guessing what Frank meant or decided."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {"query": {"type": "string", "description": "What to recall, in a few words."}},
-        "required": ["query"],
-    },
-}
-
-_ESTATE_STATUS = {
-    "type": "function",
-    "name": "estate_status",
-    "description": "Read one live view of the estate: the work queue or the machine's health. Read-only.",
-    "parameters": {
-        "type": "object",
-        "properties": {"kind": {"type": "string", "enum": ["queue", "machine"]}},
-        "required": ["kind"],
-    },
-}
-
-_TRIAGE_NEXT = {
-    "type": "function",
-    "name": "triage_next",
-    "description": "Read the next agent pull requests that need Frank, from the morning triage queue. Read-only.",
-    "parameters": {
-        "type": "object",
-        "properties": {"count": {"type": "integer", "description": "How many to read, 1 to 5."}},
-        "required": [],
-    },
-}
-
-_TRIAGE_DECIDE = {
-    "type": "function",
-    "name": "triage_decide",
-    "description": (
-        "Read back one triage decision for Frank to answer. Records nothing: his own spoken yes, "
-        "heard directly by the listener, records it."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "ref": {"type": "string", "description": "The item number from the queue, digits only."},
-            "action": {"type": "string", "enum": ["keep", "close", "review", "handoff"]},
-        },
-        "required": ["ref", "action"],
-    },
-}
-
-CLIENT_TOOLS = frozenset({
-    "meta_harness", "estate_lookup", "confirm_handoff", "handoff_status", "recall", "estate_status",
-    "triage_next", "triage_decide",
-})
+CLIENT_TOOLS = operator_kernel.NAMES
 
 
 def session_update(
@@ -239,7 +127,7 @@ def session_update(
         tools.append(_SERVER_TOOLS[0])
         if x_search:
             tools.append(_SERVER_TOOLS[1])
-    tools.extend([_TOOL, _LOOKUP, _CONFIRM, _STATUS, _RECALL, _ESTATE_STATUS, _TRIAGE_NEXT, _TRIAGE_DECIDE])
+    tools.extend(operator_kernel.realtime_schemas())
     instructions += f" Today is {datetime.now().astimezone():%A %d %B %Y, %H:%M}."
     notes: list[str] = []
     earlier = " ".join(prior.split())

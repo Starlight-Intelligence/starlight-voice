@@ -50,6 +50,54 @@ voice/text request
   -> browser-use or hosted browser provider
 ```
 
+## Operator Layers (decided 2026-11-05)
+
+The voice engine is a part we choose and swap. The operator is what we build. Every engine sits under
+the same kernel, so a cheaper or local engine can never gain powers Ara lacks, and Ara can never lose
+the approval gate.
+
+```text
+Ear     clap gate (clap.py) | later: wake phrase, push-to-talk, phone capture
+  |
+Voice   engine, swappable:
+        A. xAI Grok Voice realtime, voice ara          (primary, x_voice.py)
+        B. Pipecat cascade: Silero VAD + Smart Turn v3
+           + STT + LLM + TTS                            (fallback and offline lane, voice_loop.py)
+        C. OpenAI Realtime / Gemini Live                (bake-off only, voice_engines.py)
+  |
+Kernel  operator_kernel.py: one tool registry, each tool tagged read | propose | consent,
+        projected as realtime_schemas() or chat_schemas()
+  |
+Hands   estate_lookup, recall, estate_status, triage_*  -> read
+        meta_harness -> proposal                         -> propose
+        confirm_handoff (spoken go) + human approve      -> approval.py tier-B gate
+                                                            -> one Queen card -> a harness seat
+  |
+Face    /live: phase, lane (Grok plan or xAI key), cap, plan pause, sessions
+Memory  session_store (local) + tool_plane recall (starlight-memory)
+```
+
+What we adopt rather than build: Pipecat (transport, pipeline, interruption, Smart Turn v3 turn
+detection), the xAI realtime socket, and later a Cloudflare Durable Object hub for phone and other
+machines. What we build because nobody else has it: the kernel's single tool registry with authority
+levels, the spoken-go plus human-ack gate, cross-harness dispatch through the Queen, estate memory,
+and spend caps that fail closed. A second orchestrator (OpenJarvis, OpenClaw and similar) is out:
+the Queen is the one chair.
+
+Engine rules:
+
+- An engine registers tools only through `operator_kernel`. Contract tests fail if a projection, Ara's
+  session, or Ara's dispatcher drifts from the registry.
+- A lower-trust engine (an unvetted local model, a phone relay) gets `authority={"read"}` until it has
+  its own consent path tested.
+- The engine never writes the human ack. That stays on the tray, the CLI, or the same-origin
+  dashboard POST.
+
+Next, in order: move Ara's tool dispatch (`_finish_tools`) behind the kernel so each tool has one
+handler; give the Pipecat cascade the kernel's `chat_schemas(authority={"read"})` and the Smart Turn v3
+analyzer, so it can answer when xAI is unavailable; then measure both engines with Harness Cup v2
+(`contracts/harness-cup-v2.json`) for first-audio latency and tool accuracy on this machine.
+
 ## What Exists Now
 
 - Tauri tray shell builds.
