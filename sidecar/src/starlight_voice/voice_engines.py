@@ -53,6 +53,11 @@ VARIANTS: dict[str, Variant] = {
         "gemini-live", "Gemini Live S2S (C)", "Gemini multimodal-live (NOT installed / key-blocked)",
         "GEMINI_API_KEY", "realtime function-calling", "S2S; blocked until real Google key + extra",
     ),
+    "x-voice": Variant(
+        "x-voice", "xAI Grok Voice (X)", "grok-voice-latest speech-to-speech, double-clap gate",
+        "XAI_API_KEY", "client function meta_harness -> tools/dispatch-route.mjs, no spawn",
+        "sub-second first audio on the xAI socket; meter runs only while the session is open",
+    ),
 }
 
 
@@ -93,6 +98,21 @@ def _assemble(variant: str, settings: Settings, *, with_transport: bool):
 
 def selftest_variant(variant: str, settings: Settings | None = None) -> dict[str, object]:
     v = VARIANTS[variant]
+    if variant == "x-voice":
+        from .x_voice import readiness
+
+        report = readiness()
+        return {
+            "variant": variant,
+            "engine": v.engine,
+            "key_live": report["token"],
+            "tool_support": v.tool_support,
+            "latency_hypothesis": v.latency_hypothesis,
+            "assembles": bool(report["clap_ok"] and report["dispatch_script"]),
+            "ready": report["ready"],
+            "token_source": report["token_source"],
+            "missing": report["missing"],
+        }
     out: dict[str, object] = {
         "variant": variant, "engine": v.engine,
         "key_live": bool(os.environ.get(v.key_required)),
@@ -119,7 +139,13 @@ async def run_variant(variant: str, settings: Settings | None = None) -> int:
 
     Same harness as voice_loop.run, but the engine block is `variant`. Guarded so a fatal
     returns nonzero (Tauri restarts the sidecar). Needs the voice extra + a mic.
+    x-voice is the clap-gated Grok Voice path and does not use Pipecat.
     """
+    if variant == "x-voice":
+        from .x_voice import run_clap_loop
+
+        return await run_clap_loop()
+
     import sys
 
     from pipecat.pipeline.runner import PipelineRunner

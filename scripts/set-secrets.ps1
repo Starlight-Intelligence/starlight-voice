@@ -5,6 +5,7 @@ $envPath = Join-Path $root ".env.local"
 
 $keys = @(
   @{ Name = "OPENAI_API_KEY"; Label = "OpenAI API key" },
+  @{ Name = "XAI_API_KEY"; Label = "xAI API key (Grok Voice)" },
   @{ Name = "ANTHROPIC_API_KEY"; Label = "Anthropic API key" },
   @{ Name = "ELEVENLABS_API_KEY"; Label = "ElevenLabs API key" },
   @{ Name = "ELEVENLABS_AGENT_ID"; Label = "ElevenLabs Agent ID"; Plain = $true },

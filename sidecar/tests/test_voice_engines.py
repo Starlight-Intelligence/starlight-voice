@@ -15,7 +15,7 @@ from starlight_voice.voice_engines import VARIANTS, selftest_variant
 
 
 def test_variant_registry_covers_the_three_architectures() -> None:
-    assert set(VARIANTS) == {"component", "openai-realtime", "gemini-live"}
+    assert set(VARIANTS) == {"component", "openai-realtime", "gemini-live", "x-voice"}
 
 
 @pytest.mark.skipif(not os.environ.get("OPENROUTER_API_KEY"), reason="no OpenRouter key")

@@ -15,6 +15,7 @@ def system_status() -> dict:
     from .cognition.ledger import read_runs
     from .config import Settings
     from .memory import discover_gateway
+    from .session_store import read_live, read_sessions
     from .voice_engines import VARIANTS
 
     settings = Settings.from_env()
@@ -34,4 +35,6 @@ def system_status() -> dict:
         "first_audio_budget_ms": settings.first_audio_p50_budget_ms,
         "gateway": "running" if discover_gateway() else "not running",
         "runs": read_runs(8),
+        "live": read_live(),
+        "sessions": read_sessions(8),
     }
