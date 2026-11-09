@@ -1,6 +1,6 @@
 import os
 
-from starlight_voice.config import Settings, load_local_env
+from starlight_voice.config import Settings, load_local_env, openrouter_inference_key
 
 
 def test_load_local_env_reads_env_local_without_overwriting_process_env(tmp_path, monkeypatch) -> None:
@@ -33,12 +33,20 @@ def test_settings_from_env_overrides(monkeypatch) -> None:
     s = Settings.from_env()
     assert s.tts_engine == "kokoro"
     assert s.stt_engine == "faster-whisper"
-    assert s.llm_model == "openai/gpt-5"  # unset -> default
+    assert s.llm_model == "openai/gpt-oss-120b"  # supported Cerebras route
 
 
 def test_settings_from_env_blank_falls_back_to_default(monkeypatch) -> None:
     monkeypatch.setenv("STARLIGHT_TTS_ENGINE", "   ")
     assert Settings.from_env().tts_engine == "elevenlabs"
+
+
+def test_tts_model_can_be_selected_without_changing_voice_identity(monkeypatch):
+    monkeypatch.setenv("STARLIGHT_TTS_MODEL", "eleven_v4_turbo")
+    monkeypatch.setenv("STARLIGHT_TTS_VOICE_ID", "stable-voice-id")
+    settings = Settings.from_env()
+    assert settings.tts_model == "eleven_v4_turbo"
+    assert settings.tts_voice_id == "stable-voice-id"
 
 
 def test_load_local_env_preserves_special_chars_and_strips_inline_comments(tmp_path, monkeypatch) -> None:
@@ -57,3 +65,25 @@ def test_load_local_env_preserves_special_chars_and_strips_inline_comments(tmp_p
     assert os.environ["KEY_QUOTED"] == "sk-or-v1=ab#cd"
     assert os.environ["KEY_PLAIN"] == "hello world"
     assert os.environ["KEY_HASHVAL"] == "abc#def"
+
+
+def test_grok_profile_selects_one_gateway_and_preserves_explicit_voice_override(monkeypatch):
+    monkeypatch.setenv("STARLIGHT_VOICE_PROFILE", "grok-openrouter")
+    settings = Settings.from_env()
+    assert (settings.stt_engine, settings.stt_model) == ("openrouter-transcription", "x-ai/grok-stt-1.0")
+    assert (settings.llm_model, settings.llm_fast_provider, settings.llm_reasoning_effort) == ("x-ai/grok-4.7", "xai", "low")
+    assert (settings.tts_engine, settings.tts_model, settings.tts_voice_id) == ("openrouter-speech", "x-ai/grok-voice-tts-1.0", "ara")
+    monkeypatch.setenv("STARLIGHT_TTS_VOICE_ID", "rex")
+    assert Settings.from_env().tts_voice_id == "rex"
+
+
+def test_dedicated_key_never_falls_back_or_accepts_the_management_credential(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "shared-fixture")
+    monkeypatch.setenv("OPENROUTER_MANAGEMENT_KEY", "management-fixture")
+    monkeypatch.delenv("STARLIGHT_VOICE_OPENROUTER_API_KEY", raising=False)
+    assert openrouter_inference_key() == "shared-fixture"
+    for value in ("", "*not found*", "management-fixture", "bad\nkey"):
+        monkeypatch.setenv("STARLIGHT_VOICE_OPENROUTER_API_KEY", value)
+        assert openrouter_inference_key() == ""
+    monkeypatch.setenv("STARLIGHT_VOICE_OPENROUTER_API_KEY", "dedicated-fixture")
+    assert openrouter_inference_key() == "dedicated-fixture"

@@ -36,9 +36,9 @@ def main(argv: list[str] | None = None) -> int:
     voice.add_argument("--variant", choices=["component", "openai-realtime", "gemini-live"],
                        help="Bake-off lane: which architecture to selftest/run (default: component)")
 
-    disp = sub.add_parser("dispatch", help="Route a coding task to the fleet (dry-run packet preview)")
+    disp = sub.add_parser("dispatch", help="Preview a coding handoff without starting a harness")
     disp.add_argument("task", nargs="+")
-    disp.add_argument("--live", action="store_true", help="Actually spawn the chosen CLI for Tier-A tasks")
+    disp.add_argument("--live", action="store_true", help="Request managed dispatch (currently unavailable)")
 
     brief = sub.add_parser("brief", help="Scan repos -> ranked morning brief JSON + spoken headline")
     brief.add_argument("paths", nargs="*", help="Repo paths to scan (default: STARLIGHT_BRIEF_REPOS or this repo)")
@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
 
         outcome = Dispatcher(live=args.live).dispatch(" ".join(args.task))
         print(json.dumps(outcome, separators=(",", ":")))
-        return 0
+        return 0 if outcome["status"] == "dry-run" else 2
 
     if args.command == "runs":
         from .cognition.ledger import read_runs
@@ -136,10 +136,12 @@ def main(argv: list[str] | None = None) -> int:
             "settings": settings.to_dict(),
             "adapter_availability": availability,
             "selected_engines": selected,
-            "voice_loop_ready": not missing,
+            "voice_loop_ready": False,
+            "dependencies_available": not missing,
+            "runtime_verified": False,
             "missing": missing,
             "install_hint": adapters.INSTALL_HINT,
-            "note": "Gated until P1 voice_loop.py is wired; run `python benchmarks/run.py --probe first-audio` for the SLA gate.",
+            "note": "Dependency presence does not prove a working voice session. Graph assembly, credentials, audio, tools and latency need separate verification.",
         }, separators=(",", ":")))
         return 0
 

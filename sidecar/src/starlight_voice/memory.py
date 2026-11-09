@@ -16,13 +16,29 @@ hard timeout and falls back to context-less. External harness => includePrivate 
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 GATEWAY_JSON = "gateway.json"
 GATEWAY_TOKEN = "gateway.token"  # daemon writes a random bearer here; requests without it get 401
+
+
+def _local_gateway(url: str) -> bool:
+    """The machine bearer may only reach an explicit loopback HTTP endpoint."""
+    try:
+        parsed = urlsplit(url)
+        return (
+            parsed.scheme == "http" and ipaddress.ip_address(parsed.hostname).is_loopback
+            and parsed.port is not None and not parsed.username and not parsed.password
+            and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 def _candidate_info_paths() -> list[Path]:
@@ -50,6 +66,8 @@ def discover_gateway_auth() -> tuple[str | None, str | None]:
             if not port:
                 continue
             url = f"http://{info.get('host', '127.0.0.1')}:{port}"
+            if not _local_gateway(url):
+                continue
             token_file = p.parent / GATEWAY_TOKEN
             token = token_file.read_text(encoding="utf-8").strip() if token_file.exists() else None
             return url, token
@@ -78,11 +96,11 @@ class MemoryGatewayClient:
         return cls(base_url=url, token=token, **kw)
 
     def available(self) -> bool:
-        return bool(self.base_url)
+        return bool(self.base_url and _local_gateway(self.base_url))
 
     def search(self, query: str, *, limit: int = 4, vaults: list[str] | None = None) -> list[dict]:
         """Hybrid recall. Returns [] on any failure/timeout/401 (degrade-first)."""
-        if not self.base_url or not query.strip():
+        if not self.available() or not query.strip():
             return []
         try:
             import httpx
@@ -98,20 +116,57 @@ class MemoryGatewayClient:
                 json=body,
                 headers=headers,
                 timeout=self.timeout_s,
+                trust_env=False,
             )
-            if resp.status_code == 401:
+            if not 200 <= resp.status_code < 300:
                 return []  # auth missing/stale -> treat as unavailable, never crash
             data = resp.json()
             # gateway returns {ok, status, body:{results|atoms|...}} — be tolerant of shape
             payload = data.get("body", data) if isinstance(data, dict) else {}
+            if not isinstance(payload, dict):
+                return []
             results = payload.get("results") or payload.get("atoms") or payload.get("items") or []
-            return results if isinstance(results, list) else []
+            return [hit for hit in results[:limit] if isinstance(hit, dict)] if isinstance(results, list) else []
         except Exception:
             return []  # degrade-first: never let memory stall or crash the turn
 
     def as_context_block(self, query: str, *, limit: int = 4) -> str:
         """Recall formatted as an UNTRUSTED-data context block for the LLM (prompt-injection safe)."""
-        hits = self.search(query, limit=limit)
+        return self._format_hits(self.search(query, limit=limit))
+
+    async def search_async(self, query: str, *, limit: int = 4) -> list[dict]:
+        """One wall-clock deadline includes connect, upload and read; cancellation propagates."""
+        if not self.available() or not query.strip() or not 1 <= limit <= 8:
+            return []
+        try:
+            import httpx
+
+            headers = {"x-harness": self.harness}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+            async with asyncio.timeout(self.timeout_s):
+                async with httpx.AsyncClient(timeout=self.timeout_s, trust_env=False, follow_redirects=False) as client:
+                    response = await client.post(
+                        f"{self.base_url}/v1/memory/search",
+                        json={"query": query[:2000], "limit": limit, "retrieval_mode": "hybrid"},
+                        headers=headers,
+                    )
+                    if not 200 <= response.status_code < 300:
+                        return []
+                    data = response.json()
+                    payload = data.get("body", data) if isinstance(data, dict) else {}
+                    if not isinstance(payload, dict):
+                        return []
+                    hits = payload.get("results") or payload.get("atoms") or payload.get("items") or []
+                    return [h for h in hits[:limit] if isinstance(h, dict)] if isinstance(hits, list) else []
+        except Exception:
+            return []
+
+    async def as_context_block_async(self, query: str, *, limit: int = 4) -> str:
+        return self._format_hits(await self.search_async(query, limit=limit))
+
+    @staticmethod
+    def _format_hits(hits: list[dict]) -> str:
         if not hits:
             return ""
         lines = []
