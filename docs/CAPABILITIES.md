@@ -34,7 +34,7 @@ This file separates real capabilities from planned ones.
 | Anthropic SDK | installed | direct Claude provider lane |
 | OpenAI SDK | installed | OpenAI/Cerebras-compatible provider lane |
 | sounddevice | installed | local audio IO |
-| Pipecat | missing | realtime voice pipeline |
+| Pipecat | installed (v1.3+) | realtime voice pipeline |
 
 ## Planned Next
 
@@ -42,9 +42,9 @@ This file separates real capabilities from planned ones.
 |---|---|
 | Rust sidecar process manager | tray owns lifecycle instead of shelling out ad hoc |
 | Tray menu | pause, health, quit, settings |
-| Global PTT | the actual daily-driver interaction |
-| Audio capture/playback | first real voice loop |
-| Pipecat pipeline | provider-neutral realtime voice composition |
+| Global PTT | `Ctrl+Shift+Space` in Tauri tray (toggle voice loop) |
+| Audio capture/playback | `voice --run` + Pipecat LocalAudioTransport |
+| Pipecat pipeline | Groq STT → OpenRouter/Cerebras → ElevenLabs TTS |
 | Browser-use live sandbox | real web task execution with receipts; package exists, policy and wiring pending |
 | MCP client | safe access to SIS/Arcanea/Codex tools |
 | Installer | one hidden scheduled task, no boot chaos |
