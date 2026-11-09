@@ -17,15 +17,16 @@ body {
   overflow-x: hidden;
 }
 
-/* layered atmosphere behind everything */
+/* layered atmosphere behind everything — bioluminescence in the dark */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   z-index: -2;
   background:
-    radial-gradient(1200px 800px at 78% -8%, var(--voltage-soft), transparent 60%),
-    radial-gradient(900px 600px at -10% 108%, var(--doctrine-soft), transparent 55%),
+    radial-gradient(1100px 760px at 75% -6%, var(--synapse-soft), transparent 58%),
+    radial-gradient(900px 600px at 88% 12%, var(--voltage-soft), transparent 55%),
+    radial-gradient(800px 560px at -8% 106%, var(--fire-soft), transparent 52%),
     var(--bg);
 }
 /* fine grain so the dark never looks flat (the "vellum") */
@@ -82,8 +83,8 @@ code,
   display: block;
   height: 100%;
   width: 0;
-  background: linear-gradient(90deg, var(--voltage), var(--voltage-2));
-  box-shadow: 0 0 16px var(--voltage-glow);
+  background: linear-gradient(90deg, var(--synapse), var(--voltage-2));
+  box-shadow: 0 0 16px var(--synapse-glow);
   transition: width 0.08s linear;
 }
 
@@ -161,7 +162,7 @@ code,
   bottom: -5px;
   width: 0;
   height: 1.5px;
-  background: var(--voltage);
+  background: var(--synapse);
   transition: width var(--dur) var(--ease-out);
 }
 .nav-links a:hover {
@@ -236,6 +237,16 @@ code,
   max-width: 920px;
   text-align: center;
 }
+/* readability scrim — darkens the network directly behind the copy, lets the
+   brain glow through at the edges */
+.hero-inner::before {
+  content: "";
+  position: absolute;
+  inset: -6% -4%;
+  z-index: -1;
+  background: radial-gradient(54% 52% at 50% 52%, rgba(7, 6, 15, 0.72), rgba(7, 6, 15, 0.34) 60%, transparent 80%);
+  pointer-events: none;
+}
 .eyebrow {
   font-size: 12px;
   letter-spacing: 0.24em;
@@ -257,7 +268,7 @@ code,
   color: var(--voltage-2);
 }
 .grad {
-  background: linear-gradient(120deg, var(--voltage), var(--doctrine) 90%);
+  background: linear-gradient(120deg, var(--synapse), var(--voltage-2) 60%, var(--fire) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -427,8 +438,8 @@ code,
   width: 64px;
   height: 4px;
   border-radius: 4px;
-  background: linear-gradient(90deg, transparent, var(--voltage), transparent);
-  box-shadow: 0 0 18px var(--voltage-glow);
+  background: linear-gradient(90deg, transparent, var(--synapse), transparent);
+  box-shadow: 0 0 18px var(--synapse-glow);
   animation: flow 3.4s var(--ease-in-out) infinite;
   z-index: 1;
 }
@@ -467,11 +478,11 @@ code,
   transition: background var(--dur), box-shadow var(--dur);
 }
 .pipeline.lit .stage .dot {
-  border-color: var(--voltage);
+  border-color: var(--synapse);
 }
 .pipeline.lit .stage .dot::before {
-  background: var(--voltage);
-  box-shadow: 0 0 12px var(--voltage-glow);
+  background: var(--synapse);
+  box-shadow: 0 0 12px var(--synapse-glow);
 }
 .stage b {
   font-size: 14px;
@@ -686,7 +697,7 @@ code,
   display: block;
   height: 100%;
   width: 40%;
-  background: linear-gradient(90deg, var(--voltage), var(--voltage-2));
+  background: linear-gradient(90deg, var(--synapse), var(--voltage-2));
   animation: scan 2.6s var(--ease-in-out) infinite;
 }
 @keyframes scan {

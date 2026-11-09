@@ -36,6 +36,12 @@ def main(argv: list[str] | None = None) -> int:
     voice.add_argument("--variant", choices=["component", "openai-realtime", "gemini-live"],
                        help="Bake-off lane: which architecture to selftest/run (default: component)")
 
+    clap = sub.add_parser("clap", help="Clap to summon: on an N-clap pattern, launch the voice loop")
+    clap.add_argument("--claps", type=int, default=2, help="claps within the window to trigger (default 2)")
+    clap.add_argument("--on-trigger", default=None, help="shell command to run when the pattern fires")
+    clap.add_argument("--launch-voice", action="store_true", help="on trigger, spawn the live voice loop")
+    clap.add_argument("--quiet", action="store_true", help="only print the trigger event, not each clap")
+
     disp = sub.add_parser("dispatch", help="Preview a coding handoff without starting a harness")
     disp.add_argument("task", nargs="+")
     disp.add_argument("--live", action="store_true", help="Request managed dispatch (currently unavailable)")
@@ -91,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         from pathlib import Path
 
         from .config import repo_root
-        from .proactive.analyzer import build_brief, synthesize_spoken, write_brief
+        from .proactive.analyzer import aggregate, build_brief, recommend_next_action, synthesize_spoken, write_brief
 
         if args.paths:
             paths = [Path(p) for p in args.paths]
@@ -101,8 +107,22 @@ def main(argv: list[str] | None = None) -> int:
         brief = build_brief(paths, _date.today().isoformat())
         out = write_brief(brief, repo_root() / "memory" / "voice")
         spoken = synthesize_spoken(brief) if args.speak else brief.headline()
-        print(json.dumps({"brief_file": str(out), "count": len(brief.items), "spoken": spoken}, separators=(",", ":")))
+        print(json.dumps({
+            "brief_file": str(out),
+            "count": len(brief.items),
+            "spoken": spoken,
+            "next_action": recommend_next_action(brief),
+            "aggregate": aggregate(brief),
+        }, separators=(",", ":")))
         return 0
+
+    if args.command == "clap":
+        from .activation.clap import listen
+
+        on_trigger = args.on_trigger
+        if args.launch_voice and not on_trigger:
+            on_trigger = f'"{sys.executable}" -m starlight_voice voice --run'
+        return listen(count=args.claps, on_trigger=on_trigger, verbose=not args.quiet)
 
     if args.command == "voice":
         if args.variant:  # bake-off lane (component / openai-realtime / gemini-live)

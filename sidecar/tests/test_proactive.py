@@ -1,6 +1,14 @@
 import subprocess
 
-from starlight_voice.proactive.analyzer import RepoFinding, build_brief, scan_repos, score_findings
+from starlight_voice.proactive.analyzer import (
+    Brief,
+    RepoFinding,
+    aggregate,
+    build_brief,
+    recommend_next_action,
+    scan_repos,
+    score_findings,
+)
 
 
 def _git(repo, *args):
@@ -49,3 +57,32 @@ def test_uncommitted_and_no_remote_surface(tmp_path) -> None:
 def test_non_git_path_ignored(tmp_path) -> None:
     (tmp_path / "plain").mkdir()
     assert scan_repos([tmp_path / "plain"]) == []
+
+
+def test_aggregate_sums_across_repos() -> None:
+    brief = Brief(
+        date="2026-06-16",
+        items=[
+            RepoFinding(repo="a", branch="main", uncommitted=2, ahead=5, behind=0, no_remote=True),
+            RepoFinding(repo="b", branch="main", uncommitted=1, ahead=3, behind=4, no_remote=False),
+        ],
+    )
+    agg = aggregate(brief)
+    assert agg["repos_flagged"] == 2
+    assert agg["total_unpushed"] == 8
+    assert agg["total_behind"] == 4
+    assert agg["no_remote"] == 1
+
+
+def test_recommend_next_action_picks_top_and_explains() -> None:
+    brief = Brief(
+        date="2026-06-16",
+        items=[RepoFinding(repo="FrankX", branch="main", uncommitted=0, ahead=5, behind=0, no_remote=True)],
+    )
+    rec = recommend_next_action(brief)
+    assert rec.startswith("Start with FrankX:")
+    assert "no remote" in rec and "5 unpushed" in rec
+
+
+def test_recommend_next_action_clean_is_calm() -> None:
+    assert "clean" in recommend_next_action(Brief(date="2026-06-16", items=[])).lower()

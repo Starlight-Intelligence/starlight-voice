@@ -94,7 +94,7 @@ class Settings:
     # TTS — explicit component selection; live authentication/audition remain gates.
     tts_engine: str = "elevenlabs"               # elevenlabs | openrouter-speech | cartesia | kokoro | piper
     tts_model: str = "eleven_flash_v2_5"
-    tts_voice_id: str = ""                       # engine-specific; adapter picks a sensible default when blank
+    tts_voice_id: str = "onwK4e9ZLuTAKqWW03F9"   # ElevenLabs "Daniel - Steady Broadcaster" (British, Jarvis-grade)
     tts_device: str = "cpu"                       # only used by the local Kokoro/Piper tier
 
     # SLA (mirrors benchmarks/budgets.toml [hot_path])

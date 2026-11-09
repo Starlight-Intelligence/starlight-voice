@@ -2963,6 +2963,7 @@ name = "starlight-voice-tauri"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "once_cell",
  "serde",
  "serde_json",
  "tauri",

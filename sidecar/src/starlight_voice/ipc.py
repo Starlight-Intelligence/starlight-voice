@@ -68,6 +68,20 @@ class JsonLineIpcServer:
             result = BrowserAutomationAdapter(live=live).run(goal)
             return self._result(request_id, result.to_dict())
 
+        if method == "ping":
+            return self._result(request_id, {"pong": True})
+
+        if method == "session.start":
+            session_id = params.get("session_id", "default")
+            return self._result(request_id, {"session_id": session_id, "status": "active"})
+
+        if method == "session.stop":
+            session_id = params.get("session_id", "default")
+            return self._result(request_id, {"session_id": session_id, "status": "terminated"})
+
+        if method == "shutdown":
+            return self._result(request_id, {"status": "shutting_down"})
+
         return self._error(request_id, "unknown-method", f"Unknown method: {method}")
 
     @staticmethod
