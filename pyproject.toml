@@ -8,3 +8,11 @@ dependencies = []
 [tool.pytest.ini_options]
 testpaths = ["sidecar/tests"]
 pythonpath = ["sidecar/src"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+# benchmarks/run.py puts sidecar/src on sys.path before importing it, so its
+# imports are deliberately below that line. E402 is correct there.
+"benchmarks/*" = ["E402"]
