@@ -10,6 +10,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from starlight_voice import agui_events as agui
 from starlight_voice.agui_server import Runtime, serve, status_reply
@@ -94,6 +95,35 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(reply["mode"], "bounded-status-router")
         self.assertIsNone(reply["proposedTask"])
         self.assertIn("nothing was interpreted", reply["reply"])
+
+
+class CapturedStreamTests(unittest.TestCase):
+    """The committed evidence must still be a valid stream.
+
+    docs/evidence/agui-stream-20261113.txt was captured from a real server on
+    c940. If the protocol changes shape, that file stops being evidence - this
+    test notices instead of leaving a stale artefact in the repo.
+    """
+
+    def test_committed_capture_is_a_valid_stream(self):
+        evidence = Path(__file__).resolve().parents[2] / "docs" / "evidence" / "agui-stream-20261113.txt"
+        self.assertTrue(evidence.exists(), f"missing capture: {evidence}")
+        raw = evidence.read_text(encoding="utf-8")
+        events = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: ")]
+        self.assertGreaterEqual(len(events), 5)
+        self.assertEqual(agui.validate_stream(events), [])
+        self.assertEqual(events[0]["type"], agui.EventType.RUN_STARTED)
+        self.assertEqual(events[-1]["type"], agui.EventType.RUN_FINISHED)
+
+    def test_capture_reconstructs_the_message(self):
+        evidence = Path(__file__).resolve().parents[2] / "docs" / "evidence" / "agui-stream-20261113.txt"
+        raw = evidence.read_text(encoding="utf-8")
+        events = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: ")]
+        text = "".join(
+            e["delta"] for e in events if e["type"] == agui.EventType.TEXT_MESSAGE_CONTENT
+        )
+        self.assertIn("transport is live", text)
+        self.assertIn("nothing was interpreted", text)
 
 
 if __name__ == "__main__":
