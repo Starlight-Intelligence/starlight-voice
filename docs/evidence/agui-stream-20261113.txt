@@ -1,0 +1,12 @@
+data: {"type": "RUN_STARTED", "threadId": "t-demo", "runId": "r-demo"}
+
+data: {"type": "STATE_SNAPSHOT", "snapshot": {"mode": "bounded-status-router", "detectedLanguage": "en", "grounding": {}}}
+
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg_bd670ec9eb1e", "role": "assistant"}
+
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg_bd670ec9eb1e", "delta": "Bounded router: this transport is live and the event stream is real. Reasoning is not wired yet, so nothing was interpreted or executed."}
+
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg_bd670ec9eb1e"}
+
+data: {"type": "RUN_FINISHED", "runId": "r-demo", "outcome": {"type": "success"}}
+
