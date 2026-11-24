@@ -163,7 +163,7 @@ its controls. Disposal stops owned media and removes page listeners, including w
 capability discovery is still pending. See the embedding section in
 `docs/ARCHITECTURE-2026-10-10.md`. Command Center's existing Voice page and fixed
 same-origin broker relay are implemented in
-[draft PR 70](https://github.com/frankxai/starlight-command-center/pull/70), with a
+[draft PR 70](https://github.com/Starlight-Intelligence/starlight-command-center/pull/70), with a
 synthetic three-width mission/Stop journey. Deployment and real audio acceptance
 remain open.
 
