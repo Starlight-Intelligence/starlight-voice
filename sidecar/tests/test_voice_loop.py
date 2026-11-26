@@ -42,3 +42,13 @@ def test_provider_pin_lands_on_the_service_not_just_settings_string() -> None:
     extra = (getattr(svc._settings, "extra", {}) or {}).get("extra_body", {})
     assert extra.get("provider", {}).get("order") == ["cerebras"]
     assert extra["provider"]["allow_fallbacks"] is False  # no transcript egress on near-miss
+
+
+def test_should_recall_skips_fast_tier_protects_sla() -> None:
+    from starlight_voice.cognition import RouteTier
+    from starlight_voice.voice_loop import should_recall
+
+    assert should_recall(RouteTier.FAST.value) is False        # conversational turn: no retrieval
+    assert should_recall(RouteTier.DELIBERATION.value) is True  # deep turn: pull context
+    assert should_recall(RouteTier.CLI_AGENT.value) is True
+    assert should_recall(None) is True                          # unknown -> ground it

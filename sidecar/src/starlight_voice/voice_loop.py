@@ -35,9 +35,15 @@ def _stt_service(settings: Settings):
         raise adapters.VoiceDepsUnavailable(f"STT engine '{settings.stt_engine}' is not implemented in this graph")
     from pipecat.services.groq.stt import GroqSTTService
 
+    model = settings.stt_model or "whisper-large-v3-turbo"
+    if hasattr(GroqSTTService, "Settings"):
+        return GroqSTTService(
+            api_key=os.environ.get("GROQ_API_KEY"),
+            settings=GroqSTTService.Settings(model=model),
+        )
     return GroqSTTService(
         api_key=os.environ.get("GROQ_API_KEY"),
-        model=settings.stt_model or "whisper-large-v3-turbo",
+        model=model,
     )
 
 
@@ -48,9 +54,10 @@ def _llm_service(settings: Settings):
     without it OpenRouter may route to a 600ms+ TTFT provider and silently break the SLA.
 
     Uses the canonical `settings=` API (the old `params=`/InputParams path silently DROPPED
-    the pin — review wf_a9484479 reproduced svc._settings.extra == {}). allow_fallbacks=False:
-    the voice tier must NOT egress transcripts to an arbitrary slow upstream on a near-miss.
-    Fails LOUD at build if the pin didn't land — never ship the SLA feature as a silent no-op.
+    the pin — review wf_a9484479 reproduced svc._settings.extra == {}). allow_fallbacks=True:
+    Cerebras stays FIRST for the sub-200ms TTFT win, but a live 429 (Cerebras is rate-limited
+    upstream — observed 2026-06-26) must degrade to the next provider, not kill the turn. A
+    silent dead loop is worse than a one-off slower reply. Fails LOUD if the pin didn't land.
     """
     api_key = openrouter_inference_key()
     if not api_key:
@@ -115,10 +122,16 @@ def _tts_service(settings: Settings):
         )
     from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 
-    kwargs = {"api_key": os.environ.get("ELEVENLABS_API_KEY"), "model": settings.tts_model}
-    if settings.tts_voice_id:
-        kwargs["voice_id"] = settings.tts_voice_id
-    return ElevenLabsTTSService(**kwargs)
+    api_key = os.environ.get("ELEVENLABS_API_KEY")
+    voice_id = settings.tts_voice_id or "onwK4e9ZLuTAKqWW03F9"
+    model = settings.tts_model or "eleven_flash_v2_5"
+
+    if hasattr(ElevenLabsTTSService, "Settings"):
+        return ElevenLabsTTSService(
+            api_key=api_key,
+            settings=ElevenLabsTTSService.Settings(voice=voice_id, model=model),
+        )
+    return ElevenLabsTTSService(api_key=api_key, voice_id=voice_id, model=model)
 
 
 def _router_processor():
@@ -142,6 +155,14 @@ def _router_processor():
             await self.push_frame(frame, direction)
 
     return RouterProcessor()
+
+
+def should_recall(route_tier: str | None) -> bool:
+    """Tier-conditioned memory gate: FAST conversational turns skip retrieval to protect latency;
+    deliberation, cli-agent, and browser turns pull context. Pure and testable."""
+    from .cognition import RouteTier
+
+    return route_tier != RouteTier.FAST.value
 
 
 def _live_vad_analyzer():

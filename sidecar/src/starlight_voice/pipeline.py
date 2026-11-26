@@ -18,18 +18,35 @@ class AgentPipeline:
         self.router = CognitionRouter()
 
     def health(self) -> dict[str, object]:
+        from . import adapters
+
+        availability = adapters.availability()
+        # Cloud-first path: pipecat + groq STT lane + openrouter LLM + elevenlabs/cartesia TTS
+        voice_ready = (
+            availability.get("pipecat", False)
+            and availability.get("openrouter", False)
+            and (availability.get("elevenlabs", False) or availability.get("cartesia", False))
+            and (availability.get("groq-openrouter", False) or availability.get("groq", False))
+        )
+        import importlib.util
+
+        browser_live = importlib.util.find_spec("browser_use") is not None
+
         return {
             "service": "starlight-voice-sidecar",
             "version": __version__,
             "status": "ok",
             "capabilities": {
                 "text_mode": True,
-                "voice_loop": False,
+                "voice_loop": voice_ready,
                 "browser_dry_run": True,
-                "browser_live": False,
+                "browser_live": browser_live,
                 "doctor": True,
                 "mcp": False,
+                "dispatch": True,
+                "proactive_brief": True,
             },
+            "adapter_availability": availability,
         }
 
     def process_text(self, text: str) -> dict[str, object]:
@@ -57,6 +74,14 @@ class AgentPipeline:
             outcome = Dispatcher(live=False).dispatch(text)
             packet = outcome["packet"]
             return {"type": "handoff", "text": packet["spoken_update_for_frank"], "dispatch": outcome}
+
+        # FAST (default chat) and DELIBERATION now actually THINK: a grounded LLM answer
+        # (memory recall + Frank-DNA voice + provider pin), degrade-first. Lazy import keeps
+        # `pipeline` import-safe where the answer deps (httpx) are absent.
+        from .cognition.answer import answer
+
         if tier == RouteTier.DELIBERATION:
-            return {"type": "deliberation", "text": "I will take the slower reasoning lane for this."}
-        return {"type": "voice", "text": "Starlight Voice text path is alive."}
+            a = answer(text, fast=False)
+            return {"type": "deliberation", "text": a["text"], "grounded": a["grounded"], "model": a["model"]}
+        a = answer(text, fast=True)
+        return {"type": "voice", "text": a["text"], "grounded": a["grounded"], "model": a["model"]}

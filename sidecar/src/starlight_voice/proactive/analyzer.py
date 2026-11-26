@@ -114,6 +114,36 @@ def build_brief(paths: list[Path], date: str) -> Brief:
     return Brief(date=date, items=score_findings(scan_repos(paths)))
 
 
+def aggregate(brief: Brief) -> dict[str, int]:
+    """Cross-repo totals — the at-a-glance picture beneath the per-repo ranking."""
+    items = brief.items
+    return {
+        "repos_flagged": len(items),
+        "total_unpushed": sum(f.ahead for f in items),
+        "total_behind": sum(f.behind for f in items),
+        "total_uncommitted": sum(f.uncommitted for f in items),
+        "no_remote": sum(1 for f in items if f.no_remote),
+    }
+
+
+def recommend_next_action(brief: Brief) -> str:
+    """The single highest-leverage next move, spoken. Items are pre-sorted by score desc."""
+    if not brief.items:
+        return "Nothing pending — every repo is clean."
+    top = brief.items[0]
+    why = []
+    if top.no_remote:
+        why.append("no remote, so the work can't survive a disk failure")
+    if top.ahead:
+        why.append(f"{top.ahead} unpushed")
+    if top.behind:
+        why.append(f"{top.behind} behind origin")
+    if top.uncommitted:
+        why.append(f"{top.uncommitted} uncommitted")
+    reason = "; ".join(why) if why else "it's the highest-priority open loop"
+    return f"Start with {top.repo}: {reason}."
+
+
 def write_brief(brief: Brief, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"brief-{brief.date}.json"

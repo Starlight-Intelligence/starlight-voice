@@ -1,51 +1,65 @@
 /* ============================================================================
-   Starlight Voice — "Vellum & Voltage" design tokens (SINGLE SOURCE OF TRUTH)
+   Starlight Voice — "Bioluminescent Neural" design tokens (SINGLE SOURCE OF TRUTH)
    Imported by BOTH the public landing site (site/) and the live operator
    console (dashboard/cockpit.css). Edit here, both surfaces stay in character.
 
-   Voltage  #6e5cff  — action, the live current
-   Doctrine #e0b656  — attention, the rule that holds
-   Fraunces (display) · Inter (text) · JetBrains Mono (signal)
+   The metaphor is a brain firing in the dark: living-tissue darks, bioluminescent
+   teal synapses at rest, the Voltage spark kept as the current, synaptic gold when
+   a node fires. Type pairs Fraunces (display) with Hanken Grotesk (warm body).
+
+   Synapse  #4fe3d0  — the resting network, nodes + axons
+   Voltage  #6e5cff  — the spark / action / live current
+   Fire     #e0b656  — a synapse firing, attention, the rule that holds
    ========================================================================== */
 :root {
-  /* — brand current — */
+  /* — the living network — */
+  --synapse: #4fe3d0;
+  --synapse-2: #7ef0e2;
+  --synapse-soft: rgba(79, 227, 208, 0.16);
+  --synapse-glow: rgba(79, 227, 208, 0.5);
+
+  /* — the spark (kept from Vellum & Voltage) — */
   --voltage: #6e5cff;
   --voltage-2: #b9a6ff;
   --voltage-soft: rgba(110, 92, 255, 0.16);
-  --voltage-glow: rgba(110, 92, 255, 0.42);
-  --doctrine: #e0b656;
+  --voltage-glow: rgba(110, 92, 255, 0.45);
+
+  /* — firing / attention — */
+  --fire: #e0b656;
+  --doctrine: #e0b656; /* alias kept so existing rules don't break */
+  --fire-soft: rgba(224, 182, 86, 0.14);
   --doctrine-soft: rgba(224, 182, 86, 0.14);
 
-  /* — ink + ground — */
-  --ink: #ecebff;
-  --ink-dim: #9a98c4;
-  --ink-faint: #6f6d96;
-  --bg: #0b0a14;
-  --bg-2: #12111f;
-  --bg-3: #1a1830;
+  /* — ink + living ground — */
+  --ink: #eaf4f2;
+  --ink-dim: #93a6b4;
+  --ink-faint: #5f7180;
+  --bg: #07060f;
+  --bg-2: #0d0b1a;
+  --bg-3: #161327;
 
   /* — state — */
-  --ok: #5ad19b;
+  --ok: #4fe3d0;
   --warn: #e0b656;
   --stop: #ff6b81;
 
-  /* — glass — */
-  --glass: rgba(255, 255, 255, 0.045);
-  --glass-2: rgba(255, 255, 255, 0.025);
-  --glass-line: rgba(255, 255, 255, 0.09);
-  --glass-line-bright: rgba(255, 255, 255, 0.16);
+  /* — glass (cooler, tissue-lit) — */
+  --glass: rgba(120, 200, 220, 0.04);
+  --glass-2: rgba(120, 200, 220, 0.02);
+  --glass-line: rgba(150, 220, 230, 0.1);
+  --glass-line-bright: rgba(150, 220, 230, 0.2);
 
   /* — type — */
   --display: "Fraunces", Georgia, serif;
-  --text: "Inter", system-ui, -apple-system, sans-serif;
+  --text: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
 
   /* — radius / depth — */
   --radius: 16px;
   --radius-lg: 24px;
   --radius-sm: 10px;
-  --shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.7);
-  --shadow-glow: 0 0 40px -8px var(--voltage-glow);
+  --shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.8);
+  --shadow-glow: 0 0 40px -8px var(--synapse-glow);
 
   /* — motion — */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -67,7 +81,7 @@
 
 /* Shared focus ring — visible, on-brand, never removed for keyboard users. */
 :where(a, button, [tabindex]):focus-visible {
-  outline: 2px solid var(--voltage);
+  outline: 2px solid var(--synapse);
   outline-offset: 3px;
   border-radius: 4px;
 }

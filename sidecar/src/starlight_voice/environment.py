@@ -54,6 +54,9 @@ class EnvironmentDoctor:
         "opencode": ["--version"],
         "gemini": ["--version"],
         "arco": ["--version"],
+        "cloudcli": ["--version"],
+        "grok": ["--version"],
+        "dcode": ["--version"],
     }
 
     OPTIONAL_PACKAGES = [
@@ -61,7 +64,8 @@ class EnvironmentDoctor:
         PackageStatus("browser-use", "browser_use", False, "Browser automation agent runtime."),
         PackageStatus("anthropic", "anthropic", False, "Direct Claude SDK path."),
         PackageStatus("openai", "openai", False, "OpenAI/Cerebras-compatible SDK path."),
-        PackageStatus("sounddevice", "sounddevice", False, "Local microphone/speaker IO."),
+        PackageStatus("pyaudio", "pyaudio", False, "Local microphone/speaker IO (PortAudio/WASAPI)."),
+        PackageStatus("sounddevice", "sounddevice", False, "Alternate local audio IO."),
     ]
 
     SECRET_KEYS = [
@@ -98,7 +102,8 @@ class EnvironmentDoctor:
                 "build_shell": not missing_required,
                 "text_sidecar": True,
                 "agent_cli_lane": len(missing_agent_cli) < 4,
-                "voice_loop": self._package_present("pipecat") and self._package_present("sounddevice"),
+                "voice_loop": self._package_present("pipecat")
+                and (self._package_present("pyaudio") or self._package_present("sounddevice")),
                 "browser_live": self._package_present("browser_use"),
                 "missing_required": missing_required,
                 "missing_agent_cli": missing_agent_cli,

@@ -42,6 +42,7 @@ STATIC: dict[str, tuple[Path, str]] = {
     "/tokens.css": (SITE / "tokens.css", _CT_CSS),
     "/styles.css": (SITE / "styles.css", _CT_CSS),
     "/motion.js": (SITE / "motion.js", _CT_JS),
+    "/neural.js": (SITE / "neural.js", _CT_JS),
     "/dashboard/cockpit.html": (DASH / "cockpit.html", _CT_HTML),
     "/dashboard/cockpit.css": (DASH / "cockpit.css", _CT_CSS),
     "/dashboard/cockpit.js": (DASH / "cockpit.js", _CT_JS),
